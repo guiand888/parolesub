@@ -1,12 +1,17 @@
 """Tests for healthz API endpoint."""
 
+import asyncio
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from audio_to_subs.api.app import create_app
+from audio_to_subs.api.routes.healthz import healthz
+from audio_to_subs.api.settings import Settings
+from audio_to_subs.db.base import get_async_engine
 
 
 @pytest.fixture
@@ -56,7 +61,7 @@ class TestHealthz:
         and the endpoint returned 503, preventing worker/frontend startup.
         """
         with patch(
-            "audio_to_subs.api.routes.healthz.get_async_session",
+            "audio_to_subs.api.routes.healthz.get_async_engine",
             side_effect=OperationalError("database is locked", None, None),
         ):
             response = client_without_lifespan.get("/api/healthz")
@@ -65,3 +70,32 @@ class TestHealthz:
         detail = response.json()["detail"]
         assert "database" in detail
         assert "error" in detail["database"]
+
+    def test_healthz_not_blocked_by_concurrent_writer(self, tmp_path):
+        """/api/healthz returns promptly while another connection holds
+        BEGIN IMMEDIATE.
+
+        Regression guard: healthz previously went through
+        get_async_session(), whose "begin" listener issues BEGIN IMMEDIATE
+        unconditionally, so every 10s health probe took SQLite's single
+        writer lock even though it only ever reads. Uses a temp file-based
+        DB (not ``:memory:``, whose pooled connections don't reliably share
+        one on-disk database/lock across connections) so the writer and the
+        probe actually contend for the same lock, proving the
+        READ_ONLY_OPTION path (see db/base.py) is wired up end to end.
+        """
+        dsn = f"sqlite+aiosqlite:///{tmp_path / 'healthz-lock-test.db'}"
+        settings = Settings(DATABASE_URL=dsn, SESSION_SECRET="test-secret-not-real")
+
+        async def hold_write_lock_and_probe():
+            engine = get_async_engine(dsn)
+            writer = await engine.connect()
+            await writer.execute(text("CREATE TABLE IF NOT EXISTS t(x int)"))
+            try:
+                return await asyncio.wait_for(healthz(settings), timeout=2.0)
+            finally:
+                await writer.rollback()
+                await writer.close()
+
+        result = asyncio.run(hold_write_lock_and_probe())
+        assert result.status == "ok"

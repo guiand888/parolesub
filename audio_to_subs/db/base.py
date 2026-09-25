@@ -14,6 +14,13 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
+# Execution-option key: pass True to Connection.execution_options() to request
+# a plain deferred BEGIN instead of BEGIN IMMEDIATE for that transaction.
+# Opt-in, for callers that only ever read within the transaction (e.g. the
+# /api/healthz probe) - every other caller keeps taking the write lock up
+# front, which is deliberate (see _on_begin below).
+READ_ONLY_OPTION = "parolesub_read_only"
+
 # WAL pragmas to apply on every new connection
 WAL_PRAGMAS = {
     "journal_mode": "WAL",
@@ -80,6 +87,14 @@ def _install_sqlite_listeners(sync_engine: Engine) -> None:
 
     @event.listens_for(sync_engine, "begin")
     def _on_begin(conn: Any) -> None:
+        if conn.get_execution_options().get(READ_ONLY_OPTION):
+            # Deferred BEGIN: SQLite takes no lock until the first
+            # statement, and a read-only transaction never upgrades to a
+            # write lock, so this never contends with a concurrent
+            # BEGIN IMMEDIATE writer - unlike the unconditional write lock
+            # below, which every other transaction (read or write) takes.
+            conn.exec_driver_sql("BEGIN")
+            return
         # Acquire the write lock up front; busy_timeout then makes concurrent
         # writers wait politely instead of erroring.
         conn.exec_driver_sql("BEGIN IMMEDIATE")
