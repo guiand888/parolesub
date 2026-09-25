@@ -36,14 +36,16 @@ services:
     # it already reverse-proxies /api/ to this service over the compose
     # network (frontend/nginx.conf). Put a TLS-terminating proxy (e.g. Caddy,
     # see ./Caddyfile) in front of the frontend's published port for HTTPS.
-    # Health check (defined here, not in the Dockerfile: Podman builds OCI
-    # images and silently drops Dockerfile HEALTHCHECK instructions)
+    # Health check defined here, not in the Dockerfile: the image has no
+    # HEALTHCHECK of its own (Podman drops one anyway; more importantly, the
+    # backend and worker need different checks - see the worker's below -
+    # and a single inherited image-level check previously meant the worker
+    # silently ran the API's). audio_to_subs.healthcheck is a tiny
+    # stdlib-only module (no per-run app import, unlike the old inline
+    # `python -c "import urllib.request; ..."`) that also drops its own
+    # request from the access log (see core/logging_config.py).
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://localhost:8000/api/healthz', timeout=3)
+      test: ["CMD", "python", "-m", "audio_to_subs.healthcheck", "api"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -118,15 +120,28 @@ services:
         reservations:
           cpus: "0.5"
           memory: 512M
+    healthcheck:
+      # The worker has no HTTP server, so it can't share the API's check -
+      # under Docker it used to silently inherit the Dockerfile's
+      # HEALTHCHECK anyway (a full FastAPI app import, every 30s, pegging a
+      # core for several seconds each time). This checks the worker's
+      # own liveness heartbeat instead (see worker/heartbeat.py).
+      test: ["CMD", "python", "-m", "audio_to_subs.healthcheck", "worker"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     user: "1000:1000"
 
-    # Entrypoint override: the image's ENTRYPOINT runs uvicorn (the API).
-    # The worker must replace it entirely, so override entrypoint (not command,
-    # which would just be appended to the uvicorn entrypoint as arguments).
-    entrypoint: ["python", "-m", "audio_to_subs.worker"]
+    # Command override, not entrypoint: the image's ENTRYPOINT is tini (PID
+    # 1, reaps orphaned processes and forwards signals - see Dockerfile),
+    # with uvicorn (the API) as its default CMD. The worker replaces that
+    # default command entirely; overriding `entrypoint` instead would bypass
+    # tini and reintroduce the zombie-accumulation bug tini exists to fix.
+    command: ["python", "-m", "audio_to_subs.worker"]
 
   frontend:
     build:
