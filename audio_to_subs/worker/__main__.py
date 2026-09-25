@@ -12,9 +12,13 @@ Environment variables:
     REDIS_URL: Redis connection URL (default: redis://localhost:6379/0)
     MISTRAL_API_KEY: Mistral API key (or MISTRAL_API_KEY_FILE)
     WORKER_ID: Optional worker identifier (auto-generated if not provided)
+    WORKER_POLL_FALLBACK_SECONDS: Safety-net poll interval when idle (default: 30)
+    WORKER_HEARTBEAT_PATH: Liveness heartbeat file (default: /tmp/parolesub-worker.heartbeat)
+    WORKER_HEARTBEAT_INTERVAL_SECONDS: How often the heartbeat file is touched (default: 10)
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -30,7 +34,9 @@ from audio_to_subs.api.settings import Settings, get_settings
 from audio_to_subs.core.logging_config import configure_logging_from_env
 from audio_to_subs.db.session import get_async_session
 from audio_to_subs.queue_.claim import ClaimedJob, claim_one
+from audio_to_subs.queue_.events import CHANNEL_NEW
 from audio_to_subs.queue_.reaper import reap_stale_running
+from audio_to_subs.worker.heartbeat import WorkerHeartbeat
 from audio_to_subs.worker.runner import WorkerDeps, persist_result, run_job
 
 logger = logging.getLogger(__name__)
@@ -43,7 +49,14 @@ class Worker:
         """Initialize worker."""
         self._settings: Settings | None = None
         self._redis: Redis | None = None
+        self._pubsub: Any | None = None
         self._shutdown = False
+        # Constructed eagerly (not lazily in startup()) so handle_shutdown()
+        # can register a signal handler that sets it even if a signal
+        # arrives before startup() has run.
+        self._shutdown_event = asyncio.Event()
+        self._heartbeat: WorkerHeartbeat | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._worker_id: str = self._generate_worker_id()
 
     def _generate_worker_id(self) -> str:
@@ -66,17 +79,125 @@ class Worker:
         self._redis = redis
         logger.info("Redis connected")
 
+        # Subscribe to jobs:new before the first claim, so a job created
+        # between "no queued job found" and "subscription established" can
+        # never be missed - the notification would simply be buffered.
+        await self._resubscribe()
+
         # Run reaper on startup to clean up any stale jobs
         async with get_async_session(self._settings.DATABASE_URL) as session:
             reaped = await reap_stale_running(session, stale_seconds=120)
             logger.info(f"Reaper cleanup: {reaped} stale jobs requeued")
 
+        # Liveness heartbeat: the Docker healthcheck (see
+        # audio_to_subs.healthcheck) checks this file's mtime instead of
+        # importing the whole API app, which is what the worker inherited
+        # unmodified from the image's HEALTHCHECK before.
+        self._heartbeat = WorkerHeartbeat(
+            self._settings.WORKER_HEARTBEAT_PATH,
+            self._settings.WORKER_HEARTBEAT_INTERVAL_SECONDS,
+        )
+        self._heartbeat.reset()
+        self._heartbeat_task = asyncio.create_task(
+            self._heartbeat.run(
+                self._settings.WORKER_POLL_FALLBACK_SECONDS, self._shutdown_event
+            )
+        )
+
+    async def _resubscribe(self) -> None:
+        """(Re)create the jobs:new subscription.
+
+        Called at startup, and again after a pubsub failure - the fallback
+        poll (see _wait_for_wake) keeps the worker claiming jobs even while
+        this keeps failing, so a Redis outage degrades to polling rather
+        than stalling the worker.
+        """
+        if self._redis is None:
+            raise RuntimeError("Worker not started. Call startup() first.")
+        if self._pubsub is not None:
+            with contextlib.suppress(Exception):
+                await self._pubsub.aclose()
+        self._pubsub = self._redis.pubsub()
+        await self._pubsub.subscribe(CHANNEL_NEW)
+
     async def shutdown(self) -> None:
         """Clean up worker resources."""
         logger.info(f"Worker {self._worker_id} shutting down...")
+        self._shutdown_event.set()
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
+        if self._pubsub is not None:
+            with contextlib.suppress(Exception):
+                await self._pubsub.aclose()
         if self._redis:
             await self._redis.close()
         self._shutdown = True
+
+    async def _wait_for_wake(self) -> None:
+        """Block until a jobs:new notification, the fallback poll interval,
+        or shutdown - whichever comes first.
+
+        This replaces a plain ``asyncio.sleep(1)`` poll: the worker used to
+        take a SQLite write lock (claim_one's BEGIN IMMEDIATE) once a
+        second, forever, even with nothing queued. Now it only claims
+        again when told to, or at most every WORKER_POLL_FALLBACK_SECONDS as
+        a safety net (a missed publish, a Redis blip).
+        """
+        assert self._settings is not None
+        try:
+            await self._wait_for_wake_via_pubsub(
+                self._settings.WORKER_POLL_FALLBACK_SECONDS
+            )
+        except Exception as e:
+            logger.warning(
+                f"Worker {self._worker_id} pubsub wait failed, "
+                f"falling back to polling: {e}"
+            )
+            await asyncio.sleep(self._settings.WORKER_POLL_FALLBACK_SECONDS)
+            try:
+                await self._resubscribe()
+            except Exception as resub_err:
+                logger.warning(
+                    f"Worker {self._worker_id} failed to resubscribe to "
+                    f"{CHANNEL_NEW}: {resub_err}"
+                )
+
+    async def _wait_for_wake_via_pubsub(self, fallback_seconds: float) -> None:
+        assert self._pubsub is not None
+        message_task = asyncio.ensure_future(
+            self._pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=fallback_seconds
+            )
+        )
+        shutdown_task = asyncio.ensure_future(self._shutdown_event.wait())
+        done, pending = await asyncio.wait(
+            {message_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        if shutdown_task in done:
+            return
+
+        # message_task is done. asyncio.wait() never raises a completed
+        # task's exception on its own - .result() both retrieves it (so a
+        # pubsub error propagates to _wait_for_wake's except block instead
+        # of being silently dropped) and would otherwise log "Task
+        # exception was never retrieved" for a task nobody awaited.
+        message_task.result()
+
+        # Coalesce a burst of several jobs:new publishes (e.g. a bulk Bazarr
+        # sync) into one wake instead of one claim_one query per message.
+        with contextlib.suppress(Exception):
+            while await self._pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=0
+            ):
+                pass
 
     async def claim_and_run(self) -> None:
         """Claim a job and run it.
@@ -86,7 +207,7 @@ class Worker:
         2. If claimed, run it (or mark failed if setup/execution raises)
         3. If no job available, wait for notification
         """
-        if self._settings is None or self._redis is None:
+        if self._settings is None or self._redis is None or self._heartbeat is None:
             raise RuntimeError("Worker not started. Call startup() first.")
 
         dsn = self._settings.DATABASE_URL
@@ -99,11 +220,13 @@ class Worker:
                 async with get_async_session(dsn) as session:
                     claimed = await claim_one(session, self._worker_id)
 
+                self._heartbeat.mark_progress()
+
                 if claimed is None:
-                    # No job: sleep OUTSIDE any session so we never hold the
+                    # No job: wait OUTSIDE any session so we never hold the
                     # write lock while idle.
                     logger.debug(f"Worker {self._worker_id} waiting for jobs...")
-                    await asyncio.sleep(1)
+                    await self._wait_for_wake()
                     continue
 
                 logger.info(f"Worker {self._worker_id} claimed job {claimed.id}")
@@ -132,7 +255,11 @@ class Worker:
                     database_url=dsn,
                 )
 
-                result = await run_job(claimed, deps)
+                self._heartbeat.job_started()
+                try:
+                    result = await run_job(claimed, deps)
+                finally:
+                    self._heartbeat.job_finished()
 
                 # Persist the result in a short-lived session.
                 async with get_async_session(dsn) as session:
@@ -194,12 +321,18 @@ def handle_shutdown(worker: Worker) -> None:
     real SIGINT/SIGTERM — confirmed bug fixed in M5.7 (a unit test now invokes
     the handler with the OS signature). The handler must accept both positional
     arguments; ``frame`` is unused but required by the C signal-delivery ABI.
+
+    Also sets ``worker._shutdown_event`` (in addition to the plain
+    ``_shutdown`` flag), so a worker blocked in ``_wait_for_wake`` - which can
+    wait up to WORKER_POLL_FALLBACK_SECONDS - wakes immediately on SIGTERM
+    (forwarded by tini as PID 1) instead of at the next poll.
     """
 
     def shutdown(signum: int, frame: FrameType | None) -> None:
         signame = signal.Signals(signum).name
         logger.info(f"Received signal {signame}, shutting down...")
         worker._shutdown = True
+        worker._shutdown_event.set()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)

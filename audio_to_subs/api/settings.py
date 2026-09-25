@@ -108,6 +108,27 @@ class Settings(BaseSettings):
         description="Save subtitles in same directory as source video files",
     )
 
+    # Worker liveness. The worker claims jobs by subscribing to the jobs:new
+    # Redis channel; WORKER_POLL_FALLBACK_SECONDS is only the safety-net poll
+    # interval used when no notification arrives (Redis restart, missed
+    # publish) rather than the normal wake mechanism.
+    WORKER_POLL_FALLBACK_SECONDS: float = Field(
+        default=30.0,
+        description="Worker safety-net poll interval when idle, in seconds",
+    )
+    WORKER_HEARTBEAT_PATH: str = Field(
+        default="/tmp/parolesub-worker.heartbeat",
+        description="Path to the worker's liveness heartbeat file",
+    )
+    WORKER_HEARTBEAT_INTERVAL_SECONDS: float = Field(
+        default=10.0,
+        description="How often the worker touches its heartbeat file",
+    )
+    WORKER_HEARTBEAT_MAX_AGE_SECONDS: float = Field(
+        default=60.0,
+        description="Heartbeat age after which the worker healthcheck fails",
+    )
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

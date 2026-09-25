@@ -1,6 +1,8 @@
 """Tests for job reaper (stale job cleanup)."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -186,3 +188,75 @@ async def test_reap_stale_running_requeues_only_stale_jobs(mock_db_session):
     assert stale_refreshed.status == JobStatus.QUEUED.value
     assert stale_refreshed.worker_id is None
     assert stale_refreshed.progress_percent == 0
+
+
+class TestReaperNotifiesWorkers:
+    """The periodic reaper task must wake workers on requeue.
+
+    A worker that's blocked on the jobs:new Redis subscription (see
+    worker/__main__.py) would otherwise wait for its own fallback poll
+    interval before noticing a job the reaper just put back in the queue -
+    exactly the scenario a reap exists for: the worker that died mid-job is,
+    by definition, not the one that will notice its own job is queued again.
+    """
+
+    @pytest.mark.asyncio
+    async def test_publishes_jobs_new_when_it_requeues_a_job(self, sync_session):
+        from audio_to_subs.api.app import _run_reaper_periodically
+        from audio_to_subs.api.settings import get_settings
+
+        now = datetime.now(timezone.utc)
+        stale_running = Job(
+            id=str(uuid4()),
+            status=JobStatus.RUNNING,
+            source=JobSource.MANUAL,
+            media_path="/test/stale.mp4",
+            output_format="srt",
+            updated_at=now - timedelta(seconds=300),
+            worker_id="dead-worker",
+        )
+        sync_session.add(stale_running)
+        sync_session.commit()
+
+        settings = get_settings()
+
+        with patch(
+            "audio_to_subs.api.routes._helpers.publish_job_event",
+            new=AsyncMock(),
+        ) as mock_publish:
+            try:
+                await asyncio.wait_for(
+                    _run_reaper_periodically(settings.DATABASE_URL, settings),
+                    timeout=0.2,
+                )
+            except asyncio.TimeoutError:
+                pass  # expected: the loop only returns on cancellation
+
+        mock_publish.assert_awaited_once()
+        args = mock_publish.call_args.args
+        assert args[0] is settings
+        from audio_to_subs.queue_.events import publish_new
+
+        assert args[1] is publish_new
+        assert args[2] == "reaper"
+
+    @pytest.mark.asyncio
+    async def test_does_not_publish_when_nothing_is_stale(self, sync_session):
+        from audio_to_subs.api.app import _run_reaper_periodically
+        from audio_to_subs.api.settings import get_settings
+
+        settings = get_settings()
+
+        with patch(
+            "audio_to_subs.api.routes._helpers.publish_job_event",
+            new=AsyncMock(),
+        ) as mock_publish:
+            try:
+                await asyncio.wait_for(
+                    _run_reaper_periodically(settings.DATABASE_URL, settings),
+                    timeout=0.2,
+                )
+            except asyncio.TimeoutError:
+                pass
+
+        mock_publish.assert_not_awaited()

@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from audio_to_subs.core.logging_config import configure_logging_from_env
 
@@ -35,6 +36,9 @@ from audio_to_subs.auth.bootstrap import bootstrap_admin  # noqa: E402
 from audio_to_subs.auth.secrets import refuse_placeholder_secrets  # noqa: E402
 from audio_to_subs.bazarr.poller import start_poller, stop_poller  # noqa: E402
 from audio_to_subs.queue_.reaper import reap_stale_running  # noqa: E402
+
+if TYPE_CHECKING:
+    from audio_to_subs.api.settings import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +127,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # module-level global) so multiple create_app() instances (e.g. in tests)
     # don't leak reaper tasks across each other.
     app.state.reaper_task = asyncio.create_task(
-        _run_reaper_periodically(settings.DATABASE_URL)
+        _run_reaper_periodically(settings.DATABASE_URL, settings)
     )
     logger.info("Reaper task started")
 
@@ -157,8 +161,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutdown complete")
 
 
-async def _run_reaper_periodically(database_url: str) -> None:
-    """Run the reaper periodically to clean up stale jobs."""
+async def _run_reaper_periodically(database_url: str, settings: "Settings") -> None:
+    """Run the reaper periodically to clean up stale jobs.
+
+    Publishes jobs:new when it requeues anything, so a worker blocked on the
+    jobs:new subscription (see worker/__main__.py) picks the requeued job up
+    immediately instead of waiting for its own fallback poll interval - the
+    exact scenario a reap exists for (the worker that died mid-job is, by
+    definition, not the one that will notice its job is queued again).
+    """
+    from audio_to_subs.api.routes._helpers import publish_job_event
+    from audio_to_subs.queue_.events import publish_new
+
     while True:
         try:
             from audio_to_subs.db.session import get_async_session
@@ -167,6 +181,9 @@ async def _run_reaper_periodically(database_url: str) -> None:
                 reaped = await reap_stale_running(session, stale_seconds=120)
                 if reaped > 0:
                     logger.info(f"Reaper: {reaped} stale jobs requeued")
+                    await publish_job_event(
+                        settings, publish_new, "reaper", "reaper requeue"
+                    )
         except Exception:
             logger.exception("Reaper error")
 
