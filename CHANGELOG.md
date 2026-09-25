@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file. Versions follow [Semantic Versioning](https://semver.org/) with `v2.0.0-beta.*` pre-releases leading to the stable v2.0.0 release.
 
+## v2.6.2 - 2026-09-26
+
+Fixes the deployment inheriting a heavy, HTTP-only healthcheck onto the background worker, and the worker taking a database write lock once a second while idle - together the source of continuous CPU load and log/process noise on an otherwise idle deployment.
+
+### Fixed
+
+- **Worker healthcheck**: the worker previously had no healthcheck of its own and, on Docker (not Podman, which drops image-level `HEALTHCHECK`), silently inherited the API's - a full FastAPI app import every 30s, costing several seconds of CPU each time. The worker now has its own liveness heartbeat and healthcheck; the backend's healthcheck is also switched to the same lightweight, stdlib-only module (`audio_to_subs.healthcheck`), replacing the inline `python -c "import urllib.request; ..."`/app-import one-liners.
+- **Zombie processes**: the worker ran as PID 1 with no init, so any process that became orphaned onto it (e.g. a healthcheck run that hit its timeout) was never reaped. The image now runs under `tini`.
+- **Idle CPU/database load**: the worker polled for new jobs with a bare `asyncio.sleep(1)`, which took SQLite's single-writer lock (`BEGIN IMMEDIATE`) once a second forever, even with nothing queued. It now blocks on the `jobs:new` Redis notification the API already publishes, with a 30s poll as a safety net (also configurable, see `.env.example`) rather than polling every second regardless.
+- **`/api/healthz` write-lock contention**: the health probe went through the same `BEGIN IMMEDIATE` path as every writer, so it could queue behind the worker or the Bazarr poller. It now runs a deferred, read-only transaction that never takes the write lock.
+- **`/api/healthz` access-log spam**: the backend's own healthcheck polls this endpoint every 10s; it's now dropped from the access log (other requests are unaffected).
+- Bytecode caching: the image previously copied the application source to `/app` in addition to installing it, and `WORKDIR /app` put that copy ahead of site-packages on `sys.path`. Combined with a container uid that doesn't own `/app` (a common non-default deployment, e.g. to match host volume ownership), every fresh Python process (including the healthcheck above) had to recompile the whole package from source on every run. The image now installs the app only into site-packages, with bytecode precompiled at build time, and runs correctly under any uid.
+
+### Upgrade Notes
+
+- A custom compose file that overrides the worker's `entrypoint:` must switch to `command:` instead - the image's `ENTRYPOINT` is now `tini`, and overriding it bypasses the zombie-reaping fix above. `docker-compose.yml` and `docker-compose.docker.yml` have been updated; a fork of either must apply the same change and add the worker's own `healthcheck:` block.
+- Not part of this release, but observed on the production host while investigating: a host-level Netdata `go.d.plugin` collector polls every reachable Redis instance (including this app's) roughly once a second, which shows up as background Redis CPU/network usage unrelated to this application. Tune Netdata's own Redis collector interval if that matters on your host.
+
 ## v2.6.0-beta.1 - 2026-07-23
 
 Consolidated feature release covering milestones M8 and M10–M13 (the full v2.1–v2.6 line planned in `MILESTONES.md`). All changes are backward-compatible except the removal of the `set-password` CLI subcommand noted below.
