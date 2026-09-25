@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from audio_to_subs.api.deps import SettingsDep
-from audio_to_subs.db.session import get_async_session
+from audio_to_subs.db.base import READ_ONLY_OPTION, get_async_engine
 
 router = APIRouter(prefix="/api", tags=["healthz"])
 
@@ -26,12 +26,18 @@ async def healthz(
 
     Returns 200 if all services are healthy.
     No authentication required.
+
+    Probes the database with a deferred (non-BEGIN IMMEDIATE) read via
+    ``READ_ONLY_OPTION``, so this never queues behind SQLite's single-writer
+    lock. Polled every 10s by the backend's own Docker healthcheck, it must
+    never contend with a concurrent writer (the worker, the Bazarr poller).
     """
     # Check database
     try:
-        async with get_async_session(settings.DATABASE_URL) as session:
-            # Simple query to verify connection
-            await session.execute(text("SELECT 1"))
+        engine = get_async_engine(settings.DATABASE_URL)
+        async with engine.connect() as conn:
+            conn = await conn.execution_options(**{READ_ONLY_OPTION: True})
+            await conn.execute(text("SELECT 1"))
         db_status = "ok"
     except Exception as e:
         db_status = f"error: {str(e)}"

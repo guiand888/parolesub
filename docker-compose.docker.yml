@@ -22,7 +22,7 @@ services:
       # version. The application version is baked at build time from the
       # repo-root VERSION file (see setup.py / pyproject.toml) and reported by
       # the backend's GET /api/version, independent of deployment.
-      context: https://github.com/guiand888/parolesub.git#${PAROLESUB_TAG:-v2.6.1}
+      context: https://github.com/guiand888/parolesub.git#${PAROLESUB_TAG:-v2.6.2}
       dockerfile: Dockerfile
     image: parolesub:backend
     container_name: parolesub-backend
@@ -46,11 +46,12 @@ services:
     # network (frontend/nginx.conf). Put a TLS-terminating proxy (e.g. Caddy,
     # see ./Caddyfile) in front of the frontend's published port for HTTPS.
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://localhost:8000/api/healthz', timeout=3)
+      # Was `python -c "import urllib.request; ..."`, spawning a fresh
+      # interpreter every 10s just to hit /api/healthz. Same idea, but
+      # audio_to_subs.healthcheck is a tiny stdlib-only module (no per-run
+      # app import) that also drops its own request from the access log
+      # (see core/logging_config.py).
+      test: ["CMD", "python", "-m", "audio_to_subs.healthcheck", "api"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -90,7 +91,7 @@ services:
 
   worker:
     build:
-      context: https://github.com/guiand888/parolesub.git#${PAROLESUB_TAG:-v2.6.1}
+      context: https://github.com/guiand888/parolesub.git#${PAROLESUB_TAG:-v2.6.2}
       dockerfile: Dockerfile
     image: parolesub:worker
     container_name: parolesub-worker
@@ -122,15 +123,30 @@ services:
         reservations:
           cpus: "0.5"
           memory: 512M
+    healthcheck:
+      # The worker has no HTTP server, so it can't share the API's
+      # check - it used to silently inherit the Dockerfile's HEALTHCHECK
+      # anyway (a full FastAPI app import, every 30s, pegging a core for
+      # several seconds each time). This checks the worker's own liveness
+      # heartbeat instead (see worker/heartbeat.py).
+      test: ["CMD", "python", "-m", "audio_to_subs.healthcheck", "worker"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     user: "1000:1000"
-    entrypoint: ["python", "-m", "audio_to_subs.worker"]
+    # `command`, not `entrypoint`: the image's ENTRYPOINT is tini (PID 1,
+    # reaps orphaned processes and forwards signals - see Dockerfile).
+    # Overriding entrypoint here would bypass tini and reintroduce the
+    # zombie-accumulation bug tini exists to fix.
+    command: ["python", "-m", "audio_to_subs.worker"]
 
   frontend:
     build:
-      context: https://github.com/guiand888/parolesub.git#${PAROLESUB_TAG:-v2.6.1}:frontend
+      context: https://github.com/guiand888/parolesub.git#${PAROLESUB_TAG:-v2.6.2}:frontend
       dockerfile: Dockerfile
     image: parolesub:frontend
     container_name: parolesub-frontend

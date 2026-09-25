@@ -33,6 +33,10 @@ class TestWorkerSignalHandling:
             handler(signal.SIGTERM, None)
 
             assert worker._shutdown is True
+            # Also wakes a worker blocked in _wait_for_wake (up to
+            # WORKER_POLL_FALLBACK_SECONDS) immediately, instead of at the
+            # next poll.
+            assert worker._shutdown_event.is_set()
         finally:
             signal.signal(signal.SIGINT, prev_int)
             signal.signal(signal.SIGTERM, prev_term)

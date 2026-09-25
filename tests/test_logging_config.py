@@ -325,3 +325,63 @@ class TestSecretsRedaction:
         assert "first-secret-value-abc" not in out
         assert "second-secret-value-xyz" not in out
         assert out.count("***REDACTED***") == 2
+
+
+class TestHealthzAccessFilter:
+    """The backend's own /api/healthz poll must not spam the access log."""
+
+    @staticmethod
+    def _access_record(path: str) -> logging.LogRecord:
+        # Matches uvicorn's actual access_logger.info() call signature (see
+        # h11_impl.py / httptools_impl.py): client_addr, method, path, http
+        # version, status.
+        return logging.LogRecord(
+            name="uvicorn.access",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg='%s - "%s %s HTTP/%s" %d',
+            args=("127.0.0.1:1234", "GET", path, "1.1", 200),
+            exc_info=None,
+        )
+
+    def test_healthz_record_is_dropped(self):
+        from audio_to_subs.core.logging_config import _HealthzAccessFilter
+
+        record = self._access_record("/api/healthz")
+        assert _HealthzAccessFilter().filter(record) is False
+
+    def test_healthz_record_with_query_string_is_dropped(self):
+        from audio_to_subs.core.logging_config import _HealthzAccessFilter
+
+        record = self._access_record("/api/healthz?foo=bar")
+        assert _HealthzAccessFilter().filter(record) is False
+
+    def test_other_paths_are_kept(self):
+        from audio_to_subs.core.logging_config import _HealthzAccessFilter
+
+        record = self._access_record("/api/jobs")
+        assert _HealthzAccessFilter().filter(record) is True
+
+    def test_filter_is_wired_up_on_the_access_logger(self):
+        # Logger.filter()'s exact return type differs across Python versions
+        # (3.12+ may return the record itself rather than a bare bool), so
+        # this checks truthiness/attachment, not identity - the per-filter
+        # behavior itself is covered precisely by the unit tests above.
+        configure_logging(verbose=False)
+        access_logger = logging.getLogger("uvicorn.access")
+        assert not access_logger.filter(self._access_record("/api/healthz"))
+        assert access_logger.filter(self._access_record("/api/jobs"))
+
+    def test_filter_is_not_duplicated_across_calls(self):
+        from audio_to_subs.core.logging_config import _HealthzAccessFilter
+
+        configure_logging(verbose=False)
+        configure_logging(verbose=False)
+        configure_logging(verbose=True)
+
+        access_logger = logging.getLogger("uvicorn.access")
+        matching = [
+            f for f in access_logger.filters if isinstance(f, _HealthzAccessFilter)
+        ]
+        assert len(matching) == 1

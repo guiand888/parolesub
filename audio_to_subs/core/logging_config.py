@@ -99,6 +99,25 @@ class SecretsRedactingFilter(logging.Filter):
         return True
 
 
+class _HealthzAccessFilter(logging.Filter):
+    """Drops uvicorn access-log records for GET /api/healthz.
+
+    The backend's own Docker healthcheck polls this endpoint every 10s,
+    which otherwise fills the log with nothing but that one line forever.
+    uvicorn's access logger always calls
+    ``logger.info('%s - "%s %s HTTP/%s" %d', client_addr, method, path, ...)``
+    (see uvicorn's h11/httptools protocol implementations), so the request
+    path is ``record.args[2]``, with any query string still attached.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 3:
+            return True
+        path = str(args[2]).split("?", 1)[0]
+        return path != "/api/healthz"
+
+
 def configure_logging(verbose: bool = False) -> None:
     """Configure Python logging for parolesub.
 
@@ -135,6 +154,19 @@ def configure_logging(verbose: bool = False) -> None:
         logging.getLogger("mistralai").setLevel(logging.WARNING)
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+    # Drop the backend's own healthcheck from the access log: polled every
+    # 10s, forever, and was otherwise the only thing in the log on an idle
+    # deployment. Attached directly to the logger object (not to a
+    # handler) so it survives uvicorn's own logging.config.dictConfig call,
+    # which replaces a configured logger's handlers but never clears filters
+    # already present on the logger itself. Unconditional (not gated by
+    # `verbose`): DEBUG mode wants more logging elsewhere, not a flood of one
+    # repeated health probe. Guarded so repeated configure_logging() calls
+    # (every test in this module does one) don't pile up duplicate filters.
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, _HealthzAccessFilter) for f in access_logger.filters):
+        access_logger.addFilter(_HealthzAccessFilter())
 
 
 def configure_logging_from_env() -> None:
