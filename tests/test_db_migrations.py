@@ -316,3 +316,263 @@ async def test_migration_0007_downgrade_removes_structured_episode_columns():
 
     finally:
         os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_migration_0008_backfills_media_label_snapshot_from_bazarr_cache():
+    """`alembic upgrade head` from a seeded revision-0007 database adds the
+    4 new `jobs` columns and backfills them from `bazarr_cache` per the
+    migration's correlated UPDATE, covering every scenario called out in its
+    docstring: a fully-populated episode cache row, a movie cache row (no
+    series/season/episode), a missing cache row, a manual job (untouched),
+    an episode cache row with the old pre-0007 flattened title (no
+    structured fields yet), and a non-numeric `source_ref` (CASTs to 0,
+    matches nothing, no exception)."""
+    import sqlite3
+    import subprocess
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+
+    try:
+        env = {**os.environ, "DATABASE_URL": f"sqlite:///{db_path}"}
+
+        # Build the DB up to 0007 only, so bazarr_cache already has the
+        # structured columns but jobs does not yet have the snapshot ones.
+        upgrade_0007 = subprocess.run(
+            ["alembic", "-c", "alembic.ini", "upgrade", "0007"],
+            capture_output=True,
+            text=True,
+            cwd=".",
+            env=env,
+        )
+        assert (
+            upgrade_0007.returncode == 0
+        ), f"Upgrade to 0007 failed: {upgrade_0007.stderr}"
+
+        conn = sqlite3.connect(db_path)
+
+        # bazarr_cache seed rows.
+        conn.execute(
+            "INSERT INTO bazarr_cache (id, kind, ext_id, title, media_path, "
+            "has_any_subs, missing_subtitles, series_title, season_number, "
+            "episode_number) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "episode:100",
+                "episode",
+                100,
+                "Pilot",
+                "/tv/agency/s04e01.mkv",
+                0,
+                "[]",
+                "The Parisian Agency",
+                4,
+                1,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO bazarr_cache (id, kind, ext_id, title, media_path, "
+            "has_any_subs, missing_subtitles) VALUES (?,?,?,?,?,?,?)",
+            ("movie:200", "movie", 200, "A Movie", "/movies/a.mkv", 0, "[]"),
+        )
+        # Pre-0007 cache row: flattened title, no structured fields yet
+        # (e.g. a database upgraded straight from 0006 with no resync).
+        conn.execute(
+            "INSERT INTO bazarr_cache (id, kind, ext_id, title, media_path, "
+            "has_any_subs, missing_subtitles) VALUES (?,?,?,?,?,?,?)",
+            (
+                "episode:300",
+                "episode",
+                300,
+                "Show - Episode 3",
+                "/tv/show/old.mkv",
+                0,
+                "[]",
+            ),
+        )
+
+        # jobs seed rows (priority/progress_percent/cancel_requested have no
+        # SQL-level default - only a Python-side one - so they must be
+        # supplied explicitly for a raw INSERT).
+        jobs = [
+            ("job-a", "bazarr_episode", "100", "/tv/agency/s04e01.mkv"),
+            ("job-b", "bazarr_movie", "200", "/movies/a.mkv"),
+            ("job-c", "bazarr_episode", "999", "/tv/show/gone.mkv"),
+            ("job-d", "manual", None, "/manual/video.mp4"),
+            ("job-e", "bazarr_episode", "300", "/tv/show/old.mkv"),
+            ("job-f", "bazarr_episode", "not-a-number", "/tv/show/bad.mkv"),
+        ]
+        conn.executemany(
+            "INSERT INTO jobs (id, source, source_ref, media_path, priority, "
+            "progress_percent, cancel_requested) VALUES (?,?,?,?,0,0,0)",
+            jobs,
+        )
+        conn.commit()
+        conn.close()
+
+        upgrade_head = subprocess.run(
+            ["alembic", "-c", "alembic.ini", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            cwd=".",
+            env=env,
+        )
+        assert (
+            upgrade_head.returncode == 0
+        ), f"Upgrade to head failed: {upgrade_head.stderr}"
+
+        conn = sqlite3.connect(db_path)
+        rows = {
+            r[0]: r[1:]
+            for r in conn.execute(
+                "SELECT id, title, series_title, season_number, episode_number "
+                "FROM jobs"
+            )
+        }
+        conn.close()
+
+        # (a) fully-populated episode cache row -> all 4 backfilled.
+        assert rows["job-a"] == ("Pilot", "The Parisian Agency", 4, 1)
+        # (b) movie cache row -> title only, no series/season/episode.
+        assert rows["job-b"] == ("A Movie", None, None, None)
+        # (c) source_ref matches no cache row -> all NULL.
+        assert rows["job-c"] == (None, None, None, None)
+        # (d) manual job -> all NULL (not even touched by the UPDATE).
+        assert rows["job-d"] == (None, None, None, None)
+        # (e) pre-0007 flattened title, no structured fields yet.
+        assert rows["job-e"] == ("Show - Episode 3", None, None, None)
+        # (f) non-numeric source_ref -> CASTs to 0, matches nothing, no error.
+        assert rows["job-f"] == (None, None, None, None)
+
+    finally:
+        os.unlink(db_path)
+
+
+@pytest.mark.asyncio
+async def test_migration_0008_downgrade_removes_media_label_snapshot_columns():
+    """`alembic downgrade` from head back to 0007 drops the 4 new columns
+    and leaves the job rows themselves (count and untouched data) intact."""
+    import sqlite3
+    import subprocess
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+
+    try:
+        env = {**os.environ, "DATABASE_URL": f"sqlite:///{db_path}"}
+
+        upgrade_result = subprocess.run(
+            ["alembic", "-c", "alembic.ini", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            cwd=".",
+            env=env,
+        )
+        assert (
+            upgrade_result.returncode == 0
+        ), f"Upgrade failed: {upgrade_result.stderr}"
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO bazarr_cache (id, kind, ext_id, title, media_path, "
+            "has_any_subs, missing_subtitles, series_title, season_number, "
+            "episode_number) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "episode:400",
+                "episode",
+                400,
+                "Episode Four",
+                "/tv/agency/s04e04.mkv",
+                0,
+                "[]",
+                "The Parisian Agency",
+                4,
+                4,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO jobs (id, source, source_ref, media_path, priority, "
+            "progress_percent, cancel_requested, title, series_title, "
+            "season_number, episode_number) "
+            "VALUES (?,?,?,?,0,0,0,?,?,?,?)",
+            (
+                "job-x",
+                "bazarr_episode",
+                "400",
+                "/tv/agency/s04e04.mkv",
+                "Episode Four",
+                "The Parisian Agency",
+                4,
+                4,
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        downgrade_result = subprocess.run(
+            ["alembic", "-c", "alembic.ini", "downgrade", "0007"],
+            capture_output=True,
+            text=True,
+            cwd=".",
+            env=env,
+        )
+        assert (
+            downgrade_result.returncode == 0
+        ), f"Downgrade failed: {downgrade_result.stderr}"
+
+        conn = sqlite3.connect(db_path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        job_rows = conn.execute("SELECT id, media_path FROM jobs").fetchall()
+        version_rows = conn.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchall()
+        conn.close()
+
+        assert (
+            not {
+                "title",
+                "series_title",
+                "season_number",
+                "episode_number",
+            }
+            & cols
+        )
+        assert job_rows == [("job-x", "/tv/agency/s04e04.mkv")]
+        assert version_rows == [("0007",)]
+
+    finally:
+        os.unlink(db_path)
+
+
+def test_migration_0008_jobs_columns_match_the_job_model():
+    """After `alembic upgrade head`, the migrated `jobs` table's column set
+    matches `Job.__table__.columns` exactly - a drift guard mirroring how
+    the bazarr_cache/index tests above pin the migration against the model,
+    so an edit to one that isn't mirrored in the other fails here rather
+    than surfacing later as a runtime schema mismatch."""
+    import sqlite3
+    import subprocess
+
+    from audio_to_subs.db.models import Job
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+
+    try:
+        result = subprocess.run(
+            ["alembic", "-c", "alembic.ini", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            cwd=".",
+            env={**os.environ, "DATABASE_URL": f"sqlite:///{db_path}"},
+        )
+        assert result.returncode == 0, f"Migration failed: {result.stderr}"
+
+        conn = sqlite3.connect(db_path)
+        migrated_cols = {r[1] for r in conn.execute("PRAGMA table_info(jobs)")}
+        conn.close()
+
+        model_cols = {c.name for c in Job.__table__.columns}
+        assert migrated_cols == model_cols
+    finally:
+        os.unlink(db_path)

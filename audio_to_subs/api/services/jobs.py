@@ -2,6 +2,7 @@
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,14 +45,43 @@ async def get_path_map(db: "AsyncSession") -> PathMap:
     return await PathMap.load_from_db(db)
 
 
+@dataclass(frozen=True)
+class ResolvedSource:
+    """Everything resolved from a job's `source`/`source_ref` at creation.
+
+    `media_path`/`source_ref` feed the job's execution as before. The four
+    label fields are a one-time snapshot of the matching `BazarrCache` row
+    (see migration 0008's docstring for why a snapshot rather than a live
+    join), copied onto the `Job` row unchanged and never refreshed.
+
+    All four are `None` for a manual source. They are NEVER None for a
+    freshly-created Bazarr source: `resolve_bazarr_source` below raises a
+    404 (see its docstring) before this dataclass is even constructed if
+    the cache row is missing, so a `Job` with a Bazarr source is either
+    created with real label data or not created at all. A Bazarr job can
+    still end up with all four `None` later in its life - not from this
+    code path, but from migration 0008's one-time historical backfill,
+    which runs against *existing* jobs and leaves one NULL if its cache
+    row is gone *by the time the migration runs* (e.g. the item has since
+    left Bazarr) - see that migration's docstring.
+    """
+
+    media_path: str
+    source_ref: str | None
+    title: str | None
+    series_title: str | None
+    season_number: int | None
+    episode_number: int | None
+
+
 async def resolve_bazarr_source(
     db: "AsyncSession",
     source: JobSource,
     source_ref: str | None,
     requested_media_path: str | None,
     path_map: PathMap,
-) -> tuple[str, str | None]:
-    """Resolve Bazarr source to media path.
+) -> ResolvedSource:
+    """Resolve a job's source to a media path plus a label snapshot.
 
     Args:
         db: Database session
@@ -61,7 +91,8 @@ async def resolve_bazarr_source(
         path_map: PathMap for path translation
 
     Returns:
-        Tuple of (media_path, source_ref)
+        A `ResolvedSource` with the media path and the label fields to copy
+        onto the new `Job`.
 
     Raises:
         HTTPException: If source is bazarr but source_ref not found in cache
@@ -92,7 +123,9 @@ async def resolve_bazarr_source(
         # Use the cached media_path (already translated by poller)
         media_path = cache_entry.media_path
 
-        # If requested_media_path is provided, use it (allows override)
+        # If requested_media_path is provided, use it (allows override). The
+        # label snapshot below is unaffected - a path override doesn't
+        # change what item this job is for.
         if requested_media_path:
             media_path = path_map.translate(requested_media_path)
             logger.info(
@@ -101,16 +134,30 @@ async def resolve_bazarr_source(
                 media_path,
             )
 
-        return media_path, source_ref
+        return ResolvedSource(
+            media_path=media_path,
+            source_ref=source_ref,
+            title=cache_entry.title,
+            series_title=cache_entry.series_title,
+            season_number=cache_entry.season_number,
+            episode_number=cache_entry.episode_number,
+        )
 
     else:
-        # Manual source - use provided media_path
+        # Manual source - use provided media_path, no label snapshot
         if requested_media_path is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="media_path is required for manual source",
             )
-        return requested_media_path, source_ref
+        return ResolvedSource(
+            media_path=requested_media_path,
+            source_ref=source_ref,
+            title=None,
+            series_title=None,
+            season_number=None,
+            episode_number=None,
+        )
 
 
 async def get_default_language_code(db: "AsyncSession") -> str | None:
@@ -276,15 +323,18 @@ async def create_job_service(
     # Get path map for path translation
     path_map = await get_path_map(db)
 
-    # Resolve media_path based on source
+    # Resolve media_path (and, for a Bazarr source, a label snapshot) based
+    # on source
     try:
-        resolved_media_path, resolved_source_ref = await resolve_bazarr_source(
+        resolved = await resolve_bazarr_source(
             db,
             source,
             source_ref,
             media_path,
             path_map,
         )
+        resolved_media_path = resolved.media_path
+        resolved_source_ref = resolved.source_ref
     except HTTPException:
         raise
     except Exception as e:
@@ -360,6 +410,15 @@ async def create_job_service(
         source=source,
         source_ref=resolved_source_ref or source_ref,
         media_path=resolved_media_path,
+        # Label snapshot (migration 0008) - never refreshed after creation.
+        # A retry ("Overwrite & retry" / History retry) goes back through
+        # this same function via a fresh POST /api/jobs, so it re-snapshots
+        # from the current cache automatically; nothing should ever copy a
+        # label from an old Job row instead.
+        title=resolved.title,
+        series_title=resolved.series_title,
+        season_number=resolved.season_number,
+        episode_number=resolved.episode_number,
         output_path=final_output_path,
         language_code=final_language_code,
         language_mode=language_mode,

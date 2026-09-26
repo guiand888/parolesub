@@ -365,3 +365,81 @@ async def test_bazarr_cache_structured_episode_fields_default_to_none():
         assert fetched.sort_key is None
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_job_media_label_snapshot_round_trip():
+    """The migration-0008 columns (title, series_title, season_number,
+    episode_number) persist and re-fetch correctly for a bazarr_episode
+    job."""
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    async with engine.begin() as conn:
+        from audio_to_subs.db.base import Base
+
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with AsyncSession(engine) as session:
+        job = Job(
+            media_path="/tv/agency/s04e01.mkv",
+            output_format=OutputFormat.SRT,
+            status=JobStatus.QUEUED,
+            source=JobSource.BAZARR_EPISODE,
+            source_ref="13373",
+            title="Episode 1",
+            series_title="The Parisian Agency",
+            season_number=4,
+            episode_number=1,
+        )
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        # Fetch fresh from the DB (not just the in-memory object) to make
+        # sure the values actually round-trip through the columns.
+        result = await session.execute(select(Job).where(Job.id == job.id))
+        fetched = result.scalar_one_or_none()
+        assert fetched is not None
+        assert fetched.title == "Episode 1"
+        assert fetched.series_title == "The Parisian Agency"
+        assert fetched.season_number == 4
+        assert fetched.episode_number == 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_job_media_label_snapshot_defaults_to_none():
+    """For a manual job (or any job that omits them), the migration-0008
+    columns default to NULL/None rather than requiring a value."""
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    async with engine.begin() as conn:
+        from audio_to_subs.db.base import Base
+
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with AsyncSession(engine) as session:
+        job = Job(
+            media_path="/manual/video.mp4",
+            output_format=OutputFormat.SRT,
+            status=JobStatus.QUEUED,
+            source=JobSource.MANUAL,
+        )
+        session.add(job)
+        await session.commit()
+        await session.refresh(job)
+
+        result = await session.execute(select(Job).where(Job.id == job.id))
+        fetched = result.scalar_one_or_none()
+        assert fetched is not None
+        assert fetched.title is None
+        assert fetched.series_title is None
+        assert fetched.season_number is None
+        assert fetched.episode_number is None
+
+    await engine.dispose()

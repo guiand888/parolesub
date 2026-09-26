@@ -20,6 +20,12 @@ export interface LiveJob {
   source: string
   source_ref: string | null
   media_path: string
+  // Label snapshot (migration 0008) - see JobResponse's field comment in
+  // lib/types.ts for the null semantics.
+  title: string | null
+  series_title: string | null
+  season_number: number | null
+  episode_number: number | null
   language_code: string | null
   language_mode: LanguageMode
   output_format: string
@@ -75,6 +81,10 @@ function liveJobFromApi(j: JobResponse): LiveJob {
     source: j.source,
     source_ref: j.source_ref,
     media_path: j.media_path,
+    title: j.title,
+    series_title: j.series_title,
+    season_number: j.season_number,
+    episode_number: j.episode_number,
     language_code: j.language_code,
     language_mode: j.language_mode,
     output_format: j.output_format,
@@ -104,6 +114,10 @@ function liveJobFromEvent(event: "progress" | "cancel" | "done", jobId: string):
     source: "manual",
     source_ref: null,
     media_path: "",
+    title: null,
+    series_title: null,
+    season_number: null,
+    episode_number: null,
     language_code: null,
     language_mode: "auto",
     output_format: "srt",

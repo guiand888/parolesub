@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { QueuePage } from "./QueuePage"
 import { useJobsStore } from "@/lib/jobsStore"
 import type { JobResponse } from "@/lib/types"
+import { makeJobResponse } from "@/test/factories"
 
 // Mock the API
 vi.mock("@/lib/api", () => ({
@@ -63,38 +64,24 @@ vi.mock("@/components/JobStatusIcon", () => ({
   JobStatusIcon: ({ status }: { status: string }) => <span>Status: {status}</span>,
 }))
 
-const MOCK_JOB_QUEUED: JobResponse = {
+// No media label snapshot (title stays null) - exercises the file-name
+// fallback path.
+const MOCK_JOB_QUEUED: JobResponse = makeJobResponse({
   id: "job-1",
   status: "queued",
-  progress_percent: 0,
-  progress_message: null,
-  progress_stage: null,
-  progress_step_index: null,
-  progress_step_total: null,
   source: "bazarr_movie",
   source_ref: "123",
   media_path: "/path/to/file1.mp4",
   language_code: "en",
   language_mode: "explicit",
-  mistral_detected_language: null,
-  needs_language_review: false,
   output_format: "srt",
   created_at: "2024-01-01T00:00:00Z",
-  started_at: null,
-  finished_at: null,
-  cancel_requested: false,
-  audio_duration_seconds: null,
-  runtime_seconds: null,
-  estimated_cost_usd: null,
-  output_path: null,
-  priority: 0,
-  worker_id: null,
-  mistral_usage_json: null,
-  error_message: null,
   updated_at: "2024-01-01T00:00:00Z",
-}
+})
 
-const MOCK_JOB_RUNNING: JobResponse = {
+// Full media label snapshot - exercises the "The Parisian Agency · S04E01"
+// headline + "Episode 1" subtitle rendering.
+const MOCK_JOB_RUNNING: JobResponse = makeJobResponse({
   id: "job-2",
   status: "running",
   progress_percent: 50,
@@ -105,56 +92,42 @@ const MOCK_JOB_RUNNING: JobResponse = {
   source: "bazarr_episode",
   source_ref: "456",
   media_path: "/path/to/file2.mp4",
+  title: "Episode 1",
+  series_title: "The Parisian Agency",
+  season_number: 4,
+  episode_number: 1,
   language_code: "fr",
   language_mode: "explicit",
-  mistral_detected_language: null,
-  needs_language_review: false,
   output_format: "vtt",
   created_at: "2024-01-01T01:00:00Z",
   started_at: "2024-01-01T01:05:00Z",
-  finished_at: null,
-  cancel_requested: false,
-  audio_duration_seconds: null,
-  runtime_seconds: null,
-  estimated_cost_usd: null,
-  output_path: null,
-  priority: 0,
   worker_id: "worker-1",
-  mistral_usage_json: null,
-  error_message: null,
   updated_at: "2024-01-01T01:05:00Z",
-}
+})
 
-const MOCK_JOB_DONE: JobResponse = {
+// Manual job, no snapshot - exercises the file-name fallback with no
+// "Bazarr #" ref.
+const MOCK_JOB_DONE: JobResponse = makeJobResponse({
   id: "job-3",
   status: "done",
   progress_percent: 100,
-  progress_message: null,
   progress_stage: "done",
-  progress_step_index: null,
-  progress_step_total: null,
   source: "manual",
   source_ref: "789",
   media_path: "/path/to/file3.mp4",
   language_code: "es",
   language_mode: "explicit",
-  mistral_detected_language: null,
-  needs_language_review: false,
   output_format: "srt",
   created_at: "2024-01-01T02:00:00Z",
   started_at: "2024-01-01T02:05:00Z",
   finished_at: "2024-01-01T02:15:00Z",
-  cancel_requested: false,
   audio_duration_seconds: 120,
   runtime_seconds: 600,
   estimated_cost_usd: 0.01,
   output_path: "/path/to/output.srt",
-  priority: 0,
   worker_id: "worker-1",
-  mistral_usage_json: null,
-  error_message: null,
   updated_at: "2024-01-01T02:15:00Z",
-}
+})
 
 const MOCK_JOB_FAILED: JobResponse = {
   ...MOCK_JOB_DONE,
@@ -204,9 +177,12 @@ describe("QueuePage", () => {
       render(<QueuePage />, { wrapper })
 
       // Check that job title is displayed (this means the job is rendered in the appropriate section)
+      // No media label snapshot, so the header falls back to the file name,
+      // with the Bazarr ref surfaced in the subtitle line.
       await waitFor(() => {
-        expect(screen.getByText(/bazarr_movie #123/i)).toBeInTheDocument()
+        expect(screen.getByText("file1.mp4")).toBeInTheDocument()
       })
+      expect(screen.getByText(/Bazarr #123/)).toBeInTheDocument()
 
       // Verify the job is in the store with queued status
       const job = useJobsStore.getState().jobs["job-1"]
@@ -218,10 +194,16 @@ describe("QueuePage", () => {
 
       render(<QueuePage />, { wrapper })
 
-      // Check job title and progress (these are more specific than just "RUNNING")
+      // Check job title and progress (these are more specific than just "RUNNING").
+      // Full snapshot: headline is "The Parisian Agency" + "S04E01" (in
+      // separate sibling spans), subtitle line carries the episode title and
+      // the Bazarr ref.
       await waitFor(() => {
-        expect(screen.getByText(/bazarr_episode #456/i)).toBeInTheDocument()
+        expect(screen.getByText("The Parisian Agency")).toBeInTheDocument()
       })
+      expect(screen.getByText(/S04E01/)).toBeInTheDocument()
+      expect(screen.getByText(/Episode 1/)).toBeInTheDocument()
+      expect(screen.getByText(/Bazarr #456/)).toBeInTheDocument()
 
       // Check progress info is displayed
       await waitFor(() => {
@@ -253,7 +235,7 @@ describe("QueuePage", () => {
 
       // Job should be visible from store
       await waitFor(() => {
-        expect(screen.getByText(/bazarr_movie #123/i)).toBeInTheDocument()
+        expect(screen.getByText("file1.mp4")).toBeInTheDocument()
       })
     })
 
@@ -300,10 +282,12 @@ describe("QueuePage", () => {
 
       const { rerender } = render(<QueuePage />, { wrapper })
 
-      // Job should initially be visible
+      // Job should initially be visible (manual job, no snapshot → file-name
+      // fallback, and no Bazarr ref since it's not a Bazarr source).
       await waitFor(() => {
-        expect(screen.getByText(/manual #789/i)).toBeInTheDocument()
+        expect(screen.getByText("file3.mp4")).toBeInTheDocument()
       })
+      expect(screen.queryByText(/Bazarr #/)).not.toBeInTheDocument()
 
       // Remove job from store (simulating cleanup after animation)
       useJobsStore.getState().remove("job-3")
@@ -312,7 +296,7 @@ describe("QueuePage", () => {
 
       // Job should now be gone
       await waitFor(() => {
-        expect(screen.queryByText(/manual #789/i)).not.toBeInTheDocument()
+        expect(screen.queryByText("file3.mp4")).not.toBeInTheDocument()
       })
     })
   })
@@ -324,8 +308,8 @@ describe("QueuePage", () => {
       render(<QueuePage />, { wrapper })
 
       await waitFor(() => {
-        expect(screen.getByText(/bazarr_movie #123/i)).toBeInTheDocument()
-        expect(screen.getByText(/bazarr_episode #456/i)).toBeInTheDocument()
+        expect(screen.getByText("file1.mp4")).toBeInTheDocument()
+        expect(screen.getByText("The Parisian Agency")).toBeInTheDocument()
       })
     })
 
@@ -449,7 +433,7 @@ describe("QueuePage", () => {
       render(<QueuePage />, { wrapper })
 
       await waitFor(() => {
-        expect(screen.getByText(/manual #789/i)).toBeInTheDocument()
+        expect(screen.getByText("file3.mp4")).toBeInTheDocument()
       })
       expect(screen.queryByText(/Overwrite & retry/i)).not.toBeInTheDocument()
     })

@@ -11,6 +11,7 @@ import { useTimezoneSetting, formatDateTime } from "@/lib/datetime"
 import { formatCost, formatDuration } from "@/lib/utils"
 import { ApiError } from "@/lib/api"
 import { useJobsStore, selectHasActiveJobForSource } from "@/lib/jobsStore"
+import { jobHeadline, bazarrRef, jobFullLabel } from "@/lib/jobLabels"
 import type {
   HistoryFilters,
   HistoryResponse,
@@ -425,7 +426,7 @@ export function HistoryPage() {
                   <TableHeader className="bg-muted/50">
                     <TableRow>
                       <TableHead className="p-3">Status</TableHead>
-                      <TableHead className="p-3">Source</TableHead>
+                      <TableHead className="p-3">Item</TableHead>
                       <TableHead className="p-3">Media Path</TableHead>
                       <TableHead className="p-3">Language</TableHead>
                       <TableHead className="p-3">Runtime</TableHead>
@@ -436,20 +437,33 @@ export function HistoryPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {jobs.map((job) => (
+                    {jobs.map((job) => {
+                      const headline = jobHeadline(job)
+                      return (
                       <TableRow key={job.id} className="border-t hover:bg-muted/50">
                         <TableCell className="p-3">
                           <JobStatusIcon status={job.status} />
                         </TableCell>
-                        <TableCell className="p-3">
-                          <Badge variant="outline">
-                            {job.source.replace("bazarr_", "")}
-                          </Badge>
-                          {job.source_ref && (
-                            <span className="text-muted-foreground ml-2">
-                              #{job.source_ref}
-                            </span>
-                          )}
+                        <TableCell className="p-3 max-w-[260px]" title={jobFullLabel(job)}>
+                          {/* The name and code are separate spans, not one truncated
+                              string: a long series name should truncate on its own
+                              without ever hiding the S/E code (see jobHeadline()'s
+                              own comment in lib/jobLabels.ts). */}
+                          <div className="flex items-baseline min-w-0">
+                            <span className="truncate">{headline.name}</span>
+                            {headline.code && (
+                              <>
+                                {" "}
+                                <span className="flex-none tabular-nums">· {headline.code}</span>
+                              </>
+                            )}
+                          </div>
+                          <div className="text-muted-foreground text-xs flex items-center gap-1.5 mt-0.5">
+                            <Badge variant="outline">
+                              {job.source.replace("bazarr_", "")}
+                            </Badge>
+                            {bazarrRef(job) && <span>· {bazarrRef(job)}</span>}
+                          </div>
                         </TableCell>
                         <TableCell className="p-3 max-w-[300px]">
                           <span className="truncate block" title={job.media_path}>
@@ -562,7 +576,8 @@ export function HistoryPage() {
                           </div>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      )
+                    })}
                   </TableBody>
                 </Table>
               )}

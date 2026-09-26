@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { itemName, episodeCode, fullLabel } from "./wantedLabels"
+import { itemName, episodeCode, fullLabel, headline } from "./mediaLabels"
 import type { WantedItem } from "./types"
 
 // Minimal WantedItem builder - only the fields these helpers actually read
@@ -113,6 +113,43 @@ describe("episodeCode", () => {
   it("returns null when both numbers are missing", () => {
     const item = makeItem({ kind: "episode", season_number: null, episode_number: null })
     expect(episodeCode(item)).toBeNull()
+  })
+
+  it("formats season 0 (specials) as a real code, not as missing", () => {
+    // season_number: 0 is a real, distinct state elsewhere in this codebase
+    // (SEASON_ORDER_BUCKET_SQL buckets it as "specials", separately from
+    // NULL/"unknown") - `== null` must not treat the falsy 0 as missing.
+    const item = makeItem({ kind: "episode", season_number: 0, episode_number: 5 })
+    expect(episodeCode(item)).toBe("S00E05")
+  })
+})
+
+describe("headline", () => {
+  it("returns the bare title for a movie", () => {
+    const item = makeItem({ kind: "movie", title: "The Matrix" })
+    expect(headline(item)).toBe("The Matrix")
+  })
+
+  it("appends the episode code when backfilled", () => {
+    const item = makeItem({
+      kind: "episode",
+      title: "Pilot",
+      series_title: "Breaking Bad",
+      season_number: 4,
+      episode_number: 1,
+    })
+    expect(headline(item)).toBe("Breaking Bad · S04E01")
+  })
+
+  it("omits the code and falls back to the bare title when nothing backfilled", () => {
+    const item = makeItem({
+      kind: "episode",
+      title: "Episode 1",
+      series_title: null,
+      season_number: null,
+      episode_number: null,
+    })
+    expect(headline(item)).toBe("Episode 1")
   })
 })
 

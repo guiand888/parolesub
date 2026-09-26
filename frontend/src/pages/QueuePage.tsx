@@ -16,6 +16,7 @@ import type { LiveJob } from "@/lib/jobsStore"
 import type { JobCreate } from "@/lib/types"
 import { ApiError } from "@/lib/api"
 import { formatCost, formatDuration } from "@/lib/utils"
+import { bazarrRef, jobHeadline, jobHeadlineText, jobSubtitleParts } from "@/lib/jobLabels"
 
 // ── JobCard ───────────────────────────────────────────────────────────────────
 
@@ -25,13 +26,6 @@ interface JobCardProps {
   isCancelling: boolean
   onCreate: (payload: JobCreate) => void
   isCreating: boolean
-}
-
-function jobTitle(job: LiveJob): string {
-  if (job.source_ref) return `${job.source} #${job.source_ref}`
-  // Fall back to the filename
-  const parts = job.media_path.replace(/\\/g, "/").split("/")
-  return parts[parts.length - 1] ?? job.media_path
 }
 
 // Friendly labels for the pipeline's discrete stages.
@@ -73,6 +67,8 @@ function JobCard({ job, onCancel, isCancelling, onCreate, isCreating }: JobCardP
     job.error_message != null &&
     job.error_message.includes("output_exists")
 
+  const headline = jobHeadline(job)
+
   return (
     <Card
       className={
@@ -83,10 +79,24 @@ function JobCard({ job, onCancel, isCancelling, onCreate, isCreating }: JobCardP
         {/* Header row */}
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <p className="font-medium text-sm truncate">{jobTitle(job)}</p>
+            <p className="flex items-baseline" title={jobHeadlineText(job)}>
+              <span className="font-medium text-sm truncate">{headline.name}</span>
+              {headline.code != null && (
+                <>
+                  {" "}
+                  <span className="flex-none text-sm tabular-nums">· {headline.code}</span>
+                </>
+              )}
+            </p>
             <p className="text-xs text-muted-foreground">
-              {job.language_code ?? (job.language_mode === "auto" ? "Auto" : "—")} ·{" "}
-              {job.output_format.toUpperCase()}
+              {[
+                ...jobSubtitleParts(job),
+                job.language_code ?? (job.language_mode === "auto" ? "Auto" : "—"),
+                job.output_format.toUpperCase(),
+                bazarrRef(job),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-none">
