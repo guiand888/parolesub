@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file. Versions follow [Semantic Versioning](https://semver.org/) with `v2.0.0-beta.*` pre-releases leading to the stable v2.0.0 release.
 
+## v2.8.0 - 2026-09-26
+
+Fixes the Queue, History, and job-detail pages showing unreadable raw identifiers like "bazarr_episode #13373" for every Bazarr-sourced job, with no series, season, episode, or title visible anywhere.
+
+### Added
+
+- **Readable job labels**: the Queue, History, and job-detail pages now show a job's series/movie title and, for episodes, its season and episode number as a two-line label (e.g. "The Parisian Agency · S04E01" / "Episode 1 · fr · SRT · Bazarr #13373"), instead of the raw `source`/`source_ref` pair. A manual job, or a Bazarr job whose Bazarr item is no longer resolvable, falls back to showing its file name instead.
+
+### Changed
+
+- **`JobResponse` schema**: `GET /api/jobs`, `GET /api/jobs/{id}`, and `GET /api/history` now include four new nullable fields - `title`, `series_title`, `season_number`, `episode_number` - carrying the label snapshot described below.
+
+### Upgrade Notes
+
+- Includes a database migration (`0008`) adding the label snapshot fields to `jobs`. It runs automatically on startup like the others - no manual step required.
+- The migration backfills existing jobs' labels from the current Bazarr cache. A job whose Bazarr item has since left the library (or was never resolvable against the cache) keeps no label and falls back to showing its file name, the same as a manual job.
+- The label is a one-time snapshot taken when a job is created, not a live join - it will not retroactively update if the item is later renamed or removed in Bazarr. This is by design: a job is a historical record, and History would otherwise change or go blank on its own as the library changes.
+- A deployment upgrading straight from before v2.7.0 (skipping the migration-0007 Bazarr re-sync) will have jobs backfilled from a not-yet-re-synced cache: those jobs' labels get the old flattened "<series> - <episode>" title with no separate season/episode number, permanently - the snapshot won't fix itself later even once the cache re-syncs. This does not affect this project's own production database, which was already re-synced under v2.7.0 before this migration runs.
+
 ## v2.7.0 - 2026-09-26
 
 Fixes the Wanted library page flattening series and episode into a single title with no season visible, which put every season's generically-titled episode (e.g. each season's "Episode 1") in the same sort position with no way to tell them apart.

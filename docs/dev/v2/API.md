@@ -46,6 +46,8 @@ Default order is `sort_key` (an article-insensitive, natural-number-aware order 
 
 Jobs support full lifecycle: queued → running → done/failed/cancelled. Progress updates stream via SSE with percent, stage, and message. Cancellation is graceful with token-based propagation.
 
+`JobResponse` (returned by `POST /api/jobs`, `GET /api/jobs`, `GET /api/jobs/{id}`, and `GET /api/history`, which reuses the same model) includes a media label snapshot: `title`, `series_title`, `season_number`, `episode_number`. Unlike `WantedItem`'s fields of the same name above, these are **not live** — they're copied from the matching `bazarr_cache` row once, when the job is created (migration 0008), and never refreshed afterwards, so a job's label stays stable in History even if its Bazarr item is later renamed or removed from the library. All four are `null` for a manual job. A freshly-created Bazarr job always has these set — creating a job for a `source_ref` with no matching `bazarr_cache` row is rejected outright (404), not created with a blank label. A Bazarr job can still end up with all four `null`, but only via the one-time historical backfill in migration 0008, for a job that already existed before v2.8.0 whose cache row was itself already gone by the time that migration ran. `season_number`/`episode_number` can additionally be `null` on their own, even for an otherwise-matched job, when Bazarr's own data never had a number for that episode.
+
 ## SSE Architecture (M5.8)
 
 Global stream emits every event from `jobs:global`. Per-job stream filters to a single id. Heartbeat emitted every 15s. Redis pub/sub bridges to SSE via asyncio queue. `proxy_buffering off` required in nginx.
