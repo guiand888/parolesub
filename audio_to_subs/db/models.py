@@ -258,6 +258,17 @@ class Setting(Base):
         self.value_json = json.dumps(value)
 
 
+# Buckets `bazarr_cache.season_number` for ordering: regular seasons (1, 2, …)
+# first, then specials (season 0), then rows whose season is still unknown
+# (NULL - not yet backfilled by a sync). Shared, byte-identical, between the
+# `Index` below and `_WANTED_ORDER` in api/routes/wanted.py - see the Index's
+# comment for why this has to be a literal SQL string rather than a
+# SQLAlchemy `case()` construct.
+SEASON_ORDER_BUCKET_SQL = (
+    "CASE WHEN season_number IS NULL THEN 2 " "WHEN season_number = 0 THEN 1 ELSE 0 END"
+)
+
+
 class BazarrCache(Base):
     """Bazarr cache model for caching Bazarr items."""
 
@@ -267,6 +278,11 @@ class BazarrCache(Base):
     # "movie:{radarrId}" or "episode:{sonarrEpisodeId}"
     kind: Mapped[Literal["movie", "episode"]] = mapped_column(String(20))
     ext_id: Mapped[int] = mapped_column(Integer)
+    # The item's own title: the movie title, or the episode's own title for
+    # an episode (e.g. "Episode 1", or a real episode name). For episodes,
+    # the series name lives in `series_title` instead - this column no
+    # longer holds the flattened "<series> - <episode>" string it did before
+    # migration 0007.
     title: Mapped[str] = mapped_column(Text)
     media_path: Mapped[str] = mapped_column(Text, nullable=False)
     has_any_subs: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -279,8 +295,52 @@ class BazarrCache(Base):
     )
     active_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
+    # --- Structured series/season/episode data (migration 0007) ---
+    # Episode-only; NULL for movies. Also NULL, transiently, for an episode
+    # row synced by a pre-0007 worker that hasn't been re-polled yet
+    # (backfilled by the next full sync, which runs immediately on startup
+    # - see `run_bazarr_poller`).
+    series_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    series_ext_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # season_number/episode_number can ALSO be NULL permanently, not just
+    # transiently: Bazarr's own `/api/episodes` payload allows a null
+    # season/episode (e.g. malformed metadata, or a special with no
+    # assigned number - see `Episode.season`/`Episode.episode` in
+    # bazarr/schemas.py), and the poller passes that through as-is. A
+    # resync does not guarantee these become non-NULL.
+    season_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    episode_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Article-insensitive, natural-number sort key for the series or movie
+    # display name, from `library_sort_key()`
+    # (audio_to_subs/core/library_sort.py). Recomputed on every sync, so it
+    # never needs its own migration when the algorithm changes. NULL only
+    # transiently pre-backfill (see above) - `library_sort_key()` always
+    # returns a string, so a synced row never has a permanently-NULL
+    # `sort_key` the way `season_number`/`episode_number` can.
+    sort_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     __table_args__ = (
         CheckConstraint("kind IN ('movie','episode')", name="bazarr_cache_kind_check"),
+        # Covers every term of the Wanted list's default ORDER BY (see
+        # `SEASON_ORDER_BUCKET_SQL` below and `_WANTED_ORDER` in
+        # api/routes/wanted.py), so SQLite can satisfy the whole sort
+        # straight from the index with no temp-B-tree step - verified with
+        # EXPLAIN QUERY PLAN in tests/test_api_wanted.py. `text(...)` is
+        # required for the CASE term: SQLAlchemy's `case()` binds its
+        # THEN/ELSE values as `?` parameters by default, which never
+        # structurally matches this index's literal-integer expression, so
+        # `_WANTED_ORDER` must build its CASE term from this exact same SQL
+        # string too, not from `case()`.
+        Index(
+            "ix_bazarr_cache_sort",
+            "sort_key",
+            "kind",
+            "series_ext_id",
+            text(SEASON_ORDER_BUCKET_SQL),
+            "season_number",
+            "episode_number",
+            "id",
+        ),
     )
 
     @classmethod
