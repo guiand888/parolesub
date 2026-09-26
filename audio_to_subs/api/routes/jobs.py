@@ -114,6 +114,19 @@ class JobResponse(UTCAwareModel):
     source: JobSource
     source_ref: str | None
     media_path: str
+    # Label snapshot taken from the Bazarr cache when the job was created
+    # (migration 0008) - never refreshed afterwards. All four are None for
+    # a manual job. A freshly-created Bazarr job always has these set (job
+    # creation 404s instead if no cache row matches); a Bazarr job can only
+    # end up all-None via migration 0008's historical backfill of an
+    # existing job whose cache row was already gone by the time that
+    # migration ran. season_number/episode_number can also be individually
+    # None when Bazarr's own data never had one - see BazarrCache's
+    # matching comment in db/models.py.
+    title: str | None
+    series_title: str | None
+    season_number: int | None
+    episode_number: int | None
     output_path: str | None
     language_code: str | None
     language_mode: str
