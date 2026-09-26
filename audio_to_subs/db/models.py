@@ -109,6 +109,31 @@ class Job(Base):
     )
     source_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     media_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # --- Media label snapshot (migration 0008) ---
+    # A one-time copy of the item's identifying details, taken from
+    # `BazarrCache` when the job is created (`resolve_bazarr_source` in
+    # api/services/jobs.py) - never refreshed afterwards, unlike the cache
+    # itself. This is deliberate: a job is a historical record, and a
+    # Bazarr item can be renamed or removed from the library entirely while
+    # its finished jobs still need a stable, readable label in History. All
+    # four are NULL for a manual job. A freshly-created Bazarr job is NEVER
+    # missing its label: `resolve_bazarr_source` 404s instead of creating
+    # the job at all if no matching cache row exists. A Bazarr job CAN end
+    # up all-NULL later, though - not at creation, but via migration 0008's
+    # one-time historical backfill, which leaves an existing job's columns
+    # NULL if its cache row is already gone by the time that migration
+    # runs (e.g. the item has since left Bazarr entirely).
+    #
+    # `title` mirrors `BazarrCache.title`: the movie title, or the bare
+    # episode title. `series_title`/`season_number`/`episode_number` are
+    # episode-only and share `BazarrCache`'s NULL semantics for a season or
+    # episode number Bazarr itself doesn't provide (see the comment there).
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    series_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    season_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    episode_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     output_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     language_code: Mapped[str | None] = mapped_column(String(10), nullable=True)
     language_mode: Mapped[str] = mapped_column(
