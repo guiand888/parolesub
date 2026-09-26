@@ -75,9 +75,9 @@ describe("JobDetailPage", () => {
       makeJobResponse({
         status: "running",
         source: "bazarr_episode",
-        source_ref: "13373",
+        source_ref: "4242",
         title: "Episode 1",
-        series_title: "The Parisian Agency",
+        series_title: "The Example Show",
         season_number: 4,
         episode_number: 1,
       }),
@@ -87,9 +87,9 @@ describe("JobDetailPage", () => {
 
     expect(screen.getByText("running")).toBeInTheDocument()
     expect(
-      screen.getByText("The Parisian Agency · S04E01 · Episode 1"),
+      screen.getByText("The Example Show · S04E01 · Episode 1"),
     ).toBeInTheDocument()
-    expect(screen.getByText("Episode · Bazarr #13373")).toBeInTheDocument()
+    expect(screen.getByText("Episode · Bazarr #4242")).toBeInTheDocument()
   })
 
   it("shows 'Movie · Bazarr #<ref>' for a movie job", () => {

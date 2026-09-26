@@ -2,13 +2,19 @@
 
 All notable changes to this project are documented in this file. Versions follow [Semantic Versioning](https://semver.org/) with `v2.0.0-beta.*` pre-releases leading to the stable v2.0.0 release.
 
+## v2.8.1 - 2026-09-26
+
+### Changed
+
+- Test fixtures and docs use fictional example titles. No functional changes.
+
 ## v2.8.0 - 2026-09-26
 
-Fixes the Queue, History, and job-detail pages showing unreadable raw identifiers like "bazarr_episode #13373" for every Bazarr-sourced job, with no series, season, episode, or title visible anywhere.
+Fixes the Queue, History, and job-detail pages showing unreadable raw identifiers like "bazarr_episode #4242" for every Bazarr-sourced job, with no series, season, episode, or title visible anywhere.
 
 ### Added
 
-- **Readable job labels**: the Queue, History, and job-detail pages now show a job's series/movie title and, for episodes, its season and episode number as a two-line label (e.g. "The Parisian Agency · S04E01" / "Episode 1 · fr · SRT · Bazarr #13373"), instead of the raw `source`/`source_ref` pair. A manual job, or a Bazarr job whose Bazarr item is no longer resolvable, falls back to showing its file name instead.
+- **Readable job labels**: the Queue, History, and job-detail pages now show a job's series/movie title and, for episodes, its season and episode number as a two-line label (e.g. "The Example Show · S04E01" / "Episode 1 · fr · SRT · Bazarr #4242"), instead of the raw `source`/`source_ref` pair. A manual job, or a Bazarr job whose Bazarr item is no longer resolvable, falls back to showing its file name instead.
 
 ### Changed
 

@@ -5,9 +5,9 @@ Revises: 0007
 Create Date: 2026-09-26 00:00:00.000000
 
 Before this migration, a job's only identifying fields were `source` and
-`source_ref` (e.g. "bazarr_episode" / "13373", the Sonarr episode id), which
+`source_ref` (e.g. "bazarr_episode" / "4242", the Sonarr episode id), which
 is exactly what the Queue, History and job-detail pages showed: unreadable
-strings like "bazarr_episode #13373" with no series, season, episode or
+strings like "bazarr_episode #4242" with no series, season, episode or
 title anywhere.
 
 This migration adds four nullable columns - `title`, `series_title`,

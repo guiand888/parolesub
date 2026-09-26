@@ -7,10 +7,8 @@ class TestLeadingArticles:
     """Leading English/French articles are stripped, unless nothing remains."""
 
     def test_strips_leading_english_the(self):
-        """ "The Parisian Agency" sorts as if it were "Parisian Agency"."""
-        assert library_sort_key("The Parisian Agency") == library_sort_key(
-            "Parisian Agency"
-        )
+        """ "The Example Show" sorts as if it were "Example Show"."""
+        assert library_sort_key("The Example Show") == library_sort_key("Example Show")
 
     def test_strips_leading_english_a(self):
         """A leading "A " is stripped."""
@@ -123,14 +121,14 @@ class TestEndToEndSorting:
     """Realistic sorted() usage matches human expectations."""
 
     def test_article_insensitive_alphabetical_order_preserved(self):
-        names = ["Avatar", "The Parisian Agency", "Zeta"]
+        names = ["Avatar", "The Example Show", "Zeta"]
         assert sorted(names, key=library_sort_key) == names
 
     def test_shuffled_articles_sort_alphabetically_by_remainder(self):
-        names = ["Zeta", "Avatar", "The Parisian Agency"]
+        names = ["Zeta", "Avatar", "The Example Show"]
         assert sorted(names, key=library_sort_key) == [
             "Avatar",
-            "The Parisian Agency",
+            "The Example Show",
             "Zeta",
         ]
 

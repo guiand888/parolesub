@@ -210,10 +210,10 @@ describe("fullLabel", () => {
     const item = makeItem({
       kind: "episode",
       title: "Homecoming",
-      series_title: "The Parisian Agency",
+      series_title: "The Example Show",
       season_number: 4,
       episode_number: 1,
     })
-    expect(fullLabel(item)).toBe("The Parisian Agency · S04E01 · Homecoming")
+    expect(fullLabel(item)).toBe("The Example Show · S04E01 · Homecoming")
   })
 })

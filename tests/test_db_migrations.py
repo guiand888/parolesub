@@ -365,7 +365,7 @@ async def test_migration_0008_backfills_media_label_snapshot_from_bazarr_cache()
                 "/tv/agency/s04e01.mkv",
                 0,
                 "[]",
-                "The Parisian Agency",
+                "The Example Show",
                 4,
                 1,
             ),
@@ -432,7 +432,7 @@ async def test_migration_0008_backfills_media_label_snapshot_from_bazarr_cache()
         conn.close()
 
         # (a) fully-populated episode cache row -> all 4 backfilled.
-        assert rows["job-a"] == ("Pilot", "The Parisian Agency", 4, 1)
+        assert rows["job-a"] == ("Pilot", "The Example Show", 4, 1)
         # (b) movie cache row -> title only, no series/season/episode.
         assert rows["job-b"] == ("A Movie", None, None, None)
         # (c) source_ref matches no cache row -> all NULL.
@@ -485,7 +485,7 @@ async def test_migration_0008_downgrade_removes_media_label_snapshot_columns():
                 "/tv/agency/s04e04.mkv",
                 0,
                 "[]",
-                "The Parisian Agency",
+                "The Example Show",
                 4,
                 4,
             ),
@@ -501,7 +501,7 @@ async def test_migration_0008_downgrade_removes_media_label_snapshot_columns():
                 "400",
                 "/tv/agency/s04e04.mkv",
                 "Episode Four",
-                "The Parisian Agency",
+                "The Example Show",
                 4,
                 4,
             ),

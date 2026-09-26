@@ -370,10 +370,10 @@ class TestListWantedEndpoint:
 
         sort_key is computed with library_sort_key (never hardcoded) so this
         test tracks the real algorithm (including article-stripping: "The
-        Parisian Agency" sorts as "parisian agency", ahead of "Zeta" but
+        Example Show" sorts as "example show", ahead of "Zeta" but
         behind "Avatar").
         """
-        parisian_sort_key = library_sort_key("The Parisian Agency")
+        example_sort_key = library_sort_key("The Example Show")
         zeta_sort_key = library_sort_key("Zeta")
         avatar_sort_key = library_sort_key("Avatar")
         now = datetime.now(timezone.utc)
@@ -397,15 +397,15 @@ class TestListWantedEndpoint:
                 kind="episode",
                 ext_id=103,
                 title="Episode 1",
-                series_title="The Parisian Agency",
+                series_title="The Example Show",
                 series_ext_id=100,
                 season_number=4,
                 episode_number=1,
-                media_path="/data/series/parisian/s04e01.mkv",
+                media_path="/data/series/example/s04e01.mkv",
                 has_any_subs=False,
                 missing_subtitles=[],
                 last_polled=now,
-                sort_key=parisian_sort_key,
+                sort_key=example_sort_key,
             ),
             BazarrCache(
                 id="episode:201",
@@ -427,60 +427,60 @@ class TestListWantedEndpoint:
                 kind="episode",
                 ext_id=102,
                 title="Episode 10",
-                series_title="The Parisian Agency",
+                series_title="The Example Show",
                 series_ext_id=100,
                 season_number=1,
                 episode_number=10,
-                media_path="/data/series/parisian/s01e10.mkv",
+                media_path="/data/series/example/s01e10.mkv",
                 has_any_subs=False,
                 missing_subtitles=[],
                 last_polled=now,
-                sort_key=parisian_sort_key,
+                sort_key=example_sort_key,
             ),
             BazarrCache(
                 id="episode:105",
                 kind="episode",
                 ext_id=105,
                 title="Unresolved Episode",
-                series_title="The Parisian Agency",
+                series_title="The Example Show",
                 series_ext_id=100,
                 season_number=None,
                 episode_number=None,
-                media_path="/data/series/parisian/unknown.mkv",
+                media_path="/data/series/example/unknown.mkv",
                 has_any_subs=False,
                 missing_subtitles=[],
                 last_polled=now,
-                sort_key=parisian_sort_key,
+                sort_key=example_sort_key,
             ),
             BazarrCache(
                 id="episode:104",
                 kind="episode",
                 ext_id=104,
                 title="Special: Behind the Scenes",
-                series_title="The Parisian Agency",
+                series_title="The Example Show",
                 series_ext_id=100,
                 season_number=0,
                 episode_number=1,
-                media_path="/data/series/parisian/s00e01.mkv",
+                media_path="/data/series/example/s00e01.mkv",
                 has_any_subs=False,
                 missing_subtitles=[],
                 last_polled=now,
-                sort_key=parisian_sort_key,
+                sort_key=example_sort_key,
             ),
             BazarrCache(
                 id="episode:101",
                 kind="episode",
                 ext_id=101,
                 title="Episode 2",
-                series_title="The Parisian Agency",
+                series_title="The Example Show",
                 series_ext_id=100,
                 season_number=1,
                 episode_number=2,
-                media_path="/data/series/parisian/s01e02.mkv",
+                media_path="/data/series/example/s01e02.mkv",
                 has_any_subs=False,
                 missing_subtitles=[],
                 last_polled=now,
-                sort_key=parisian_sort_key,
+                sort_key=example_sort_key,
             ),
         ]
         sync_session.add_all(items)
@@ -491,8 +491,8 @@ class TestListWantedEndpoint:
         self, sync_session, authenticated_client
     ):
         """Regression test for the ordering bug: with real sort/season/
-        episode data, results must come back as Avatar, then the Parisian
-        Agency's episodes in season/episode order (regular seasons before
+        episode data, results must come back as Avatar, then the Example
+        Show's episodes in season/episode order (regular seasons before
         the season-0 special before the unknown-season episode), then
         Zeta - never lexicographic-by-bare-title order."""
         self._seed_ordering_series(sync_session)
@@ -614,7 +614,7 @@ class TestListWantedEndpoint:
         actually load-bearing in `_WANTED_ORDER`, not merely decorative.
 
         `_seed_ordering_series`'s multi-row fixture can't catch a regression
-        here: every one of its "The Parisian Agency" rows already shares
+        here: every one of its "The Example Show" rows already shares
         the same kind AND series_ext_id, so dropping either term from
         `_WANTED_ORDER` wouldn't change that fixture's expected order at
         all. This test forges a same-sort_key collision between two
@@ -688,7 +688,7 @@ class TestListWantedEndpoint:
         items = {i["id"]: i for i in response.json()["items"]}
 
         episode = items["episode:101"]
-        assert episode["series_title"] == "The Parisian Agency"
+        assert episode["series_title"] == "The Example Show"
         assert episode["season_number"] == 1
         assert episode["episode_number"] == 2
 
@@ -790,11 +790,11 @@ class TestListWantedEndpoint:
     def test_list_wanted_search_text_plus_season_code(
         self, sync_session, authenticated_client
     ):
-        """search="agency s01" matches the season-1 episodes of the series
-        whose name (not bare episode title) contains "agency"."""
+        """search="example s01" matches the season-1 episodes of the series
+        whose name (not bare episode title) contains "example"."""
         self._seed_ordering_series(sync_session)
         response = authenticated_client.get(
-            "/api/wanted", params={"search": "agency s01"}
+            "/api/wanted", params={"search": "example s01"}
         )
         assert response.status_code == 200
         ids = {i["id"] for i in response.json()["items"]}

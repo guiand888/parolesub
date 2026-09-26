@@ -79,7 +79,7 @@ const MOCK_JOB_QUEUED: JobResponse = makeJobResponse({
   updated_at: "2024-01-01T00:00:00Z",
 })
 
-// Full media label snapshot - exercises the "The Parisian Agency · S04E01"
+// Full media label snapshot - exercises the "The Example Show · S04E01"
 // headline + "Episode 1" subtitle rendering.
 const MOCK_JOB_RUNNING: JobResponse = makeJobResponse({
   id: "job-2",
@@ -93,7 +93,7 @@ const MOCK_JOB_RUNNING: JobResponse = makeJobResponse({
   source_ref: "456",
   media_path: "/path/to/file2.mp4",
   title: "Episode 1",
-  series_title: "The Parisian Agency",
+  series_title: "The Example Show",
   season_number: 4,
   episode_number: 1,
   language_code: "fr",
@@ -195,11 +195,11 @@ describe("QueuePage", () => {
       render(<QueuePage />, { wrapper })
 
       // Check job title and progress (these are more specific than just "RUNNING").
-      // Full snapshot: headline is "The Parisian Agency" + "S04E01" (in
+      // Full snapshot: headline is "The Example Show" + "S04E01" (in
       // separate sibling spans), subtitle line carries the episode title and
       // the Bazarr ref.
       await waitFor(() => {
-        expect(screen.getByText("The Parisian Agency")).toBeInTheDocument()
+        expect(screen.getByText("The Example Show")).toBeInTheDocument()
       })
       expect(screen.getByText(/S04E01/)).toBeInTheDocument()
       expect(screen.getByText(/Episode 1/)).toBeInTheDocument()
@@ -309,7 +309,7 @@ describe("QueuePage", () => {
 
       await waitFor(() => {
         expect(screen.getByText("file1.mp4")).toBeInTheDocument()
-        expect(screen.getByText("The Parisian Agency")).toBeInTheDocument()
+        expect(screen.getByText("The Example Show")).toBeInTheDocument()
       })
     })
 
