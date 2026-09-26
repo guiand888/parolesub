@@ -26,6 +26,19 @@ export interface JobResponse {
   source: JobSource
   source_ref: string | null
   media_path: string
+  // Label snapshot taken from the Bazarr cache when the job was created
+  // (migration 0008) - never refreshed afterwards, so a renamed or
+  // removed Bazarr item doesn't change or blank an old job's label. All
+  // four are null for a manual job. A freshly-created Bazarr job always
+  // has these set (job creation is rejected outright if no cache row
+  // matches); a Bazarr job can only end up with all four null via the
+  // migration's one-time historical backfill of a pre-existing job whose
+  // cache row was already gone by the time that migration ran. See
+  // lib/jobLabels.ts.
+  title: string | null
+  series_title: string | null
+  season_number: number | null
+  episode_number: number | null
   output_path: string | null
   language_code: string | null
   language_mode: LanguageMode
@@ -120,7 +133,7 @@ export interface WantedItem {
   // The item's OWN bare title: for a movie, the movie title; for an
   // episode, the bare episode title (e.g. "Episode 1", "Pilot") - NOT a
   // flattened "series - episode" string. Combine with series_title /
-  // season_number / episode_number below (see lib/wantedLabels.ts) to
+  // season_number / episode_number below (see lib/mediaLabels.ts) to
   // build a display label.
   title: string
   media_path: string

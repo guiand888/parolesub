@@ -44,7 +44,7 @@ import { useWantedRefresh } from "@/hooks/useWantedRefresh"
 import { useJobsStore } from "@/lib/jobsStore"
 import { ApiError } from "@/lib/api"
 import { naturalCompare } from "@/lib/utils"
-import { itemName, episodeCode, fullLabel } from "@/lib/wantedLabels"
+import { itemName, episodeCode, fullLabel } from "@/lib/mediaLabels"
 import { Progress } from "@/components/ui/progress"
 import type {
   JobConflictDetail,

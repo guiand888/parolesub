@@ -36,6 +36,10 @@ const BASE_JOB: JobResponse = {
   source: "bazarr_movie",
   source_ref: "1",
   media_path: "/movies/test.mkv",
+  title: "Test Movie (2024)",
+  series_title: null,
+  season_number: null,
+  episode_number: null,
   output_path: "/movies/test.und.srt",
   language_code: "und",
   language_mode: "auto",
@@ -235,6 +239,64 @@ describe("HistoryPage", () => {
       expect(screen.getByText("Runtime")).toBeInTheDocument()
     })
     expect(screen.getAllByText("1m 0s")).toHaveLength(2)
+  })
+
+  describe("Item column (label snapshot)", () => {
+    it("shows the headline, type badge, and Bazarr ref for a fully-snapshotted episode job", async () => {
+      const episodeJob: JobResponse = {
+        ...BASE_JOB,
+        id: "job-episode",
+        source: "bazarr_episode",
+        source_ref: "456",
+        title: "Episode 1",
+        series_title: "The Parisian Agency",
+        season_number: 4,
+        episode_number: 1,
+      }
+      vi.mocked(api.get).mockResolvedValue(historyWith([episodeJob]))
+
+      render(<HistoryPage />, { wrapper })
+
+      // The name and its "S04E01" code sit in separate sibling nodes (kept
+      // that way so only the name truncates), so match on the cell's full
+      // textContent rather than getByText's default (per-node-own-text)
+      // matching, which would only ever see one fragment at a time.
+      await waitFor(() => {
+        expect(
+          screen.getByText(
+            (_, element) => element?.textContent === "The Parisian Agency · S04E01",
+          ),
+        ).toBeInTheDocument()
+      })
+      expect(screen.getByText("episode")).toBeInTheDocument()
+      expect(screen.getByText("· Bazarr #456")).toBeInTheDocument()
+      expect(
+        screen.getByTitle("The Parisian Agency · S04E01 · Episode 1"),
+      ).toBeInTheDocument()
+    })
+
+    it("falls back to the file name (and no Bazarr ref) for a job with no media snapshot", async () => {
+      const manualJob: JobResponse = {
+        ...BASE_JOB,
+        id: "job-manual",
+        source: "manual",
+        source_ref: null,
+        title: null,
+        series_title: null,
+        season_number: null,
+        episode_number: null,
+        media_path: "/uploads/clip.mp4",
+      }
+      vi.mocked(api.get).mockResolvedValue(historyWith([manualJob]))
+
+      render(<HistoryPage />, { wrapper })
+
+      await waitFor(() => {
+        expect(screen.getByText("clip.mp4")).toBeInTheDocument()
+      })
+      expect(screen.getByText("manual")).toBeInTheDocument()
+      expect(screen.queryByText(/Bazarr #/)).not.toBeInTheDocument()
+    })
   })
 
   describe("Retry action (M12)", () => {

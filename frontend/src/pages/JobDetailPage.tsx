@@ -7,7 +7,8 @@ import { Link, useParams } from "@tanstack/react-router"
 
 import { useJob, useJobLogs } from "@/hooks/useJobs"
 import { useTimezoneSetting, formatDateTime } from "@/lib/datetime"
-import type { LogLevel } from "@/lib/types"
+import { jobFullLabel, bazarrRef } from "@/lib/jobLabels"
+import type { LogLevel, JobResponse } from "@/lib/types"
 
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -39,6 +40,19 @@ function getLevelBadgeClass(level: LogLevel): string {
       return "bg-log-error text-primary-foreground border-transparent"
     default:
       return "bg-muted text-foreground border-transparent"
+  }
+}
+
+// "Episode" / "Movie" / "Manual", derived from the job's source - the
+// type line shown under the full label in the CardDescription.
+function jobSourceType(job: JobResponse): string {
+  switch (job.source) {
+    case "bazarr_episode":
+      return "Episode"
+    case "bazarr_movie":
+      return "Movie"
+    default:
+      return "Manual"
   }
 }
 
@@ -98,13 +112,12 @@ export function JobDetailPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Badge variant="outline">{job.status}</Badge>
-              <span className="text-muted-foreground">
-                {job.source.replace("bazarr_", "")}
-              </span>
+              <span className="text-muted-foreground">{jobFullLabel(job)}</span>
             </CardTitle>
-            {job.source_ref && (
-              <CardDescription>Source ref #{job.source_ref}</CardDescription>
-            )}
+            <CardDescription>
+              {jobSourceType(job)}
+              {bazarrRef(job) && <> · {bazarrRef(job)}</>}
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
