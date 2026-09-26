@@ -33,12 +33,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { useWanted } from "@/hooks/useWanted"
 import { useCreateJob } from "@/hooks/useJobs"
 import { useWantedRefresh } from "@/hooks/useWantedRefresh"
 import { useJobsStore } from "@/lib/jobsStore"
 import { ApiError } from "@/lib/api"
 import { naturalCompare } from "@/lib/utils"
+import { itemName, episodeCode, fullLabel } from "@/lib/wantedLabels"
 import { Progress } from "@/components/ui/progress"
 import type {
   JobConflictDetail,
@@ -155,7 +161,7 @@ function TranscribeDialog({ item, onClose }: TranscribeDialogProps) {
           <DialogTitle>Transcribe</DialogTitle>
         </DialogHeader>
         <div className="space-y-1 text-sm text-muted-foreground">
-          <span className="font-medium text-foreground">{item.title}</span>
+          <span className="font-medium text-foreground">{fullLabel(item)}</span>
         </div>
 
         <div className="space-y-4 pt-2">
@@ -309,16 +315,12 @@ export function WantedPage() {
     page_size: pageSize,
   })
 
-  // Server now applies search + type + language + scope filtering, so the
-  // client only needs to surface the returned items.
-  const items = useMemo(() => {
-    if (!data?.items) return []
-    // Search, scope, and language filtering are applied server-side (see
-    // the useWanted call above), so the client only sorts what comes back.
-    // Default sort: alphabetical by title (case-insensitive). No sorting
-    // options or extra categories are exposed yet, so this is the baseline.
-    return [...data.items].sort((a, b) => naturalCompare(a.title, b.title))
-  }, [data?.items])
+  // Server now applies search + type + language + scope filtering AND
+  // sorting (series name, then season, then episode - article/case/accent-
+  // insensitive, natural numbers; see audio_to_subs/api/routes/wanted.py),
+  // so the client just surfaces the returned items as-is. Do NOT re-sort
+  // here - the returned order is authoritative.
+  const items = data?.items ?? []
 
   // Options for the language filter dropdown come from a dedicated query that
   // omits `language`, so picking a language doesn't shrink `data.items` to
@@ -357,7 +359,7 @@ export function WantedPage() {
         <div className="relative flex-1 min-w-[180px] max-w-xs">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Search…"
+            placeholder="Search title or S01E02…"
             className="pl-8"
             value={search}
             onChange={(e) => {
@@ -489,7 +491,8 @@ export function WantedPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="min-w-[200px]">Title</TableHead>
+                <TableHead className="min-w-[200px]">Series / Movie</TableHead>
+                <TableHead className="w-[100px]">S/E</TableHead>
                 <TableHead className="w-[100px]">Type</TableHead>
                 <TableHead className="w-[280px]">Missing</TableHead>
                 <TableHead className="w-[110px] text-right">Action</TableHead>
@@ -581,6 +584,8 @@ function WantedRow({ item, onTranscribe }: WantedRowProps) {
   const hasActiveJob =
     liveJob != null || (item.active_job_id != null && item.active_job_status != null)
 
+  const code = episodeCode(item)
+
   return (
     <TableRow>
       <TableCell className="font-medium">
@@ -591,8 +596,22 @@ function WantedRow({ item, onTranscribe }: WantedRowProps) {
               aria-label="Job active"
             />
           )}
-          {item.title}
+          {itemName(item)}
         </span>
+      </TableCell>
+      <TableCell>
+        {code ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span tabIndex={0} className="tabular-nums text-sm">
+                {code}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>{item.title}</TooltipContent>
+          </Tooltip>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
       </TableCell>
       <TableCell className="text-muted-foreground capitalize">
         {item.kind}

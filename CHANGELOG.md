@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file. Versions follow [Semantic Versioning](https://semver.org/) with `v2.0.0-beta.*` pre-releases leading to the stable v2.0.0 release.
 
+## v2.7.0 - 2026-09-26
+
+Fixes the Wanted library page flattening series and episode into a single title with no season visible, which put every season's generically-titled episode (e.g. each season's "Episode 1") in the same sort position with no way to tell them apart.
+
+### Added
+
+- **Structured series/season/episode data for the Wanted library**: the Bazarr sync now tracks an episode's series, season number, and episode number as their own fields instead of only baking them into a flattened title string. The Wanted page's "Title" column is replaced with a "Series / Movie" column and a new "S/E" column (e.g. "S04E01"), with the episode's bare title available as a hover tooltip.
+- **Episode-code search**: `GET /api/wanted`'s `search` parameter now also recognizes episode codes such as `S04E01`, `s4e1`, or `4x01`, and can combine a code with free text in the same query (e.g. `"agency s04"` matches the series/episode name and filters to season 4). It also now matches the series name, not just the item's own title.
+
+### Fixed
+
+- **Wanted list sort order**: the list was previously ordered by a plain, buggy `lower(title)` lexicographic sort over the flattened "<series> - <episode>" string. Series with a generic per-season episode title collided in the same sort position with no season to distinguish them, and numeric ordering was purely lexicographic (e.g. "Episode 10" sorted before "Episode 2"). The list is now ordered by an article-insensitive, natural-number-aware sort key over the series/movie name, then kind, then series, then season (regular seasons first, specials/season 0 next, unknown-season episodes last), then episode number, then id as a final tie-breaker - a stable order across pages, not just within one.
+
+### Upgrade Notes
+
+- Includes a database migration (`0007`) adding structured series/season/episode fields and a sort key to the Bazarr cache. It runs automatically on startup like the others - no manual step required.
+- The new columns are nullable and backfilled by the next full Bazarr sync, which runs immediately at startup, not by the migration itself. Existing library rows show full series/season/episode data once that first post-upgrade sync completes, not instantly on restart. `season_number`/`episode_number` can stay null for a given episode even after that sync, if Bazarr's own data lacks a season/episode number for it.
+
 ## v2.6.2 - 2026-09-26
 
 Fixes the deployment inheriting a heavy, HTTP-only healthcheck onto the background worker, and the worker taking a database write lock once a second while idle - together the source of continuous CPU load and log/process noise on an otherwise idle deployment.

@@ -29,7 +29,8 @@ from audio_to_subs.bazarr.poller import (
     start_poller,
     stop_poller,
 )
-from audio_to_subs.bazarr.schemas import Episode, Movie, SubtitleLanguage
+from audio_to_subs.bazarr.schemas import Episode, Movie, Series, SubtitleLanguage
+from audio_to_subs.core.library_sort import library_sort_key
 from audio_to_subs.db.models import BazarrCache, Setting
 
 
@@ -596,12 +597,42 @@ class TestProcessMovie:
             }
         ]
 
+    @pytest.mark.asyncio
+    async def test_process_movie_sets_sort_key_and_leaves_episode_fields_null(
+        self, mock_db_session
+    ):
+        """A movie's sort_key comes from its own title, and the
+        episode-only structured fields (series_title, series_ext_id,
+        season_number, episode_number) stay None - a movie has no series."""
+        movie = Movie(
+            title="The Movie Title",
+            radarrId=5001,
+            sceneName="/bazarr/movies/The Movie Title.mkv",
+        )
+        path_map = PathMap()
+        started_at = datetime.now(timezone.utc)
+
+        await _process_movie(mock_db_session, movie, path_map, started_at)
+
+        result = await mock_db_session.execute(
+            select(BazarrCache).where(BazarrCache.id == "movie:5001")
+        )
+        entry = result.scalar_one()
+
+        assert entry.sort_key == library_sort_key("The Movie Title")
+        assert entry.series_title is None
+        assert entry.series_ext_id is None
+        assert entry.season_number is None
+        assert entry.episode_number is None
+
 
 class TestProcessEpisode:
     """Test _process_episode function against Bazarr's full `/api/episodes`
     Episode schema (full-sync ingest - no separate wanted/detail split
-    anymore). `title` is now an explicit caller-supplied argument since a
-    per-episode payload doesn't carry its series' title."""
+    anymore). `series` is now an explicit caller-supplied argument (the
+    resolved Series, or None) since a per-episode payload doesn't carry its
+    series' title - `_process_episode` derives `series_title`/`sort_key`
+    from it and stores `episode.title` bare."""
 
     @pytest.mark.asyncio
     async def test_process_episode_new_entry(self, mock_db_session):
@@ -613,12 +644,11 @@ class TestProcessEpisode:
             sceneName="/bazarr/tv/Test Show/Pilot.mkv",
             missing_subtitles=[SubtitleLanguage(name="English", code2="en")],
         )
+        series = Series(sonarrSeriesId=789, title="Test Show", path="/tv/Test Show")
         path_map = PathMap([("/bazarr/tv", "/local/tv")])
         started_at = datetime.now(timezone.utc)
 
-        await _process_episode(
-            mock_db_session, episode, path_map, started_at, "Test Show - Pilot"
-        )
+        await _process_episode(mock_db_session, episode, path_map, started_at, series)
 
         # Check that the entry was created
         result = await mock_db_session.execute(
@@ -629,7 +659,132 @@ class TestProcessEpisode:
         assert entry is not None
         assert entry.kind == "episode"
         assert entry.ext_id == 456
-        assert entry.title == "Test Show - Pilot"
+        # `title` is the episode's own bare title now, never flattened with
+        # the series title.
+        assert entry.title == "Pilot"
+        assert entry.series_title == "Test Show"
+        assert entry.series_ext_id == 789
+        assert entry.sort_key == library_sort_key("Test Show")
+
+    @pytest.mark.asyncio
+    async def test_process_episode_backfills_a_pre_0007_flattened_row(
+        self, mock_db_session
+    ):
+        """A row synced by a pre-migration-0007 worker has the old
+        flattened "<series> - <episode>" title and NULL structured fields.
+        The very next sync must overwrite it with the bare title and the
+        real structured fields - this is the mechanism migration 0007's
+        docstring promises ("existing rows are backfilled by the next full
+        Bazarr sync"), and nothing else in this file exercises the UPDATE
+        branch for an episode (only `test_process_movie_update_existing`
+        covers an update, and only for a movie).
+        """
+        pre_0007_row = BazarrCache(
+            id="episode:456",
+            kind="episode",
+            ext_id=456,
+            title="Test Show - Pilot",
+            media_path="/old/tv/Test Show/Pilot.mkv",
+            has_any_subs=False,
+            missing_subtitles=[],
+            last_polled=datetime.now(timezone.utc) - timedelta(days=1),
+            series_title=None,
+            series_ext_id=None,
+            season_number=None,
+            episode_number=None,
+            sort_key=None,
+        )
+        mock_db_session.add(pre_0007_row)
+        await mock_db_session.commit()
+
+        episode = Episode(
+            sonarrEpisodeId=456,
+            sonarrSeriesId=789,
+            title="Pilot",
+            season=1,
+            episode=1,
+            sceneName="/bazarr/tv/Test Show/Pilot.mkv",
+        )
+        series = Series(sonarrSeriesId=789, title="Test Show", path="/tv/Test Show")
+        path_map = PathMap([("/bazarr/tv", "/local/tv")])
+        started_at = datetime.now(timezone.utc)
+
+        await _process_episode(mock_db_session, episode, path_map, started_at, series)
+
+        result = await mock_db_session.execute(
+            select(BazarrCache).where(BazarrCache.id == "episode:456")
+        )
+        entry = result.scalar_one_or_none()
+
+        assert entry is not None
+        assert entry.title == "Pilot"
+        assert entry.series_title == "Test Show"
+        assert entry.series_ext_id == 789
+        assert entry.season_number == 1
+        assert entry.episode_number == 1
+        assert entry.sort_key == library_sort_key("Test Show")
+
+    @pytest.mark.asyncio
+    async def test_process_episode_persists_season_and_episode_number(
+        self, mock_db_session
+    ):
+        """season_number/episode_number are persisted straight from
+        Episode.season/Episode.episode, unpadded/undisplayed - the fix for
+        the Wanted page showing every episode of a season as an
+        indistinguishable "<series> - <episode title>" row."""
+        episode = Episode(
+            sonarrEpisodeId=457,
+            sonarrSeriesId=789,
+            title="Episode 2",
+            sceneName="/bazarr/tv/Test Show/Episode 2.mkv",
+            season=3,
+            episode=12,
+        )
+        series = Series(sonarrSeriesId=789, title="Test Show", path="/tv/Test Show")
+        path_map = PathMap()
+        started_at = datetime.now(timezone.utc)
+
+        await _process_episode(mock_db_session, episode, path_map, started_at, series)
+
+        result = await mock_db_session.execute(
+            select(BazarrCache).where(BazarrCache.id == "episode:457")
+        )
+        entry = result.scalar_one()
+
+        assert entry.season_number == 3
+        assert entry.episode_number == 12
+
+    @pytest.mark.asyncio
+    async def test_process_episode_unknown_series_fallback(self, mock_db_session):
+        """When the caller can't resolve the episode's series (e.g. its
+        sonarrSeriesId doesn't match any series in the current page),
+        `_process_episode` still stores a usable series_title/series_ext_id/
+        sort_key instead of leaving them null."""
+        episode = Episode(
+            sonarrEpisodeId=458,
+            sonarrSeriesId=999,
+            title="Orphan Episode",
+            sceneName="/bazarr/tv/Orphan/Orphan Episode.mkv",
+            season=1,
+            episode=1,
+        )
+        path_map = PathMap()
+        started_at = datetime.now(timezone.utc)
+
+        await _process_episode(mock_db_session, episode, path_map, started_at, None)
+
+        result = await mock_db_session.execute(
+            select(BazarrCache).where(BazarrCache.id == "episode:458")
+        )
+        entry = result.scalar_one()
+
+        assert entry.title == "Orphan Episode"
+        assert entry.series_title == "Unknown series"
+        # sonarrSeriesId is a required field on every Episode regardless of
+        # whether the series lookup succeeded.
+        assert entry.series_ext_id == 999
+        assert entry.sort_key is not None
+        assert entry.sort_key == library_sort_key("Unknown series")
 
     @pytest.mark.asyncio
     async def test_process_episode_has_any_subs_from_present_subtitles(
@@ -648,12 +803,11 @@ class TestProcessEpisode:
             missing_subtitles=[SubtitleLanguage(name="English", code2="en")],
             subtitles=[SubtitleLanguage(name="French", code2="fr", code3="fre")],
         )
+        series = Series(sonarrSeriesId=1, title="Test Show", path="/tv/Test Show")
         path_map = PathMap([])
         started_at = datetime.now(timezone.utc)
 
-        await _process_episode(
-            mock_db_session, episode, path_map, started_at, "Test Show - Mixed"
-        )
+        await _process_episode(mock_db_session, episode, path_map, started_at, series)
 
         result = await mock_db_session.execute(
             select(BazarrCache).where(BazarrCache.id == "episode:999")
@@ -674,12 +828,11 @@ class TestProcessEpisode:
             title="Complete",
             sceneName="/bazarr/tv/Test Show/Complete.mkv",
         )
+        series = Series(sonarrSeriesId=1, title="Test Show", path="/tv/Test Show")
         path_map = PathMap([])
         started_at = datetime.now(timezone.utc)
 
-        await _process_episode(
-            mock_db_session, episode, path_map, started_at, "Test Show - Complete"
-        )
+        await _process_episode(mock_db_session, episode, path_map, started_at, series)
 
         result = await mock_db_session.execute(
             select(BazarrCache).where(BazarrCache.id == "episode:1000")
@@ -700,12 +853,13 @@ class TestProcessEpisode:
             sceneName="/bazarr/tv/German Show/Pilot.mkv",
             audio_language=[SubtitleLanguage(name="German", code2="de", code3="ger")],
         )
+        series = Series(
+            sonarrSeriesId=2001, title="German Show", path="/tv/German Show"
+        )
         path_map = PathMap()
         started_at = datetime.now(timezone.utc)
 
-        await _process_episode(
-            mock_db_session, episode, path_map, started_at, "German Show - Pilot"
-        )
+        await _process_episode(mock_db_session, episode, path_map, started_at, series)
 
         result = await mock_db_session.execute(
             select(BazarrCache).where(BazarrCache.id == "episode:1001")
@@ -739,12 +893,11 @@ class TestProcessEpisodePath:
             sceneName="/tv/Baron Noir/S01E03.mkv",
             path=None,
         )
+        series = Series(sonarrSeriesId=5, title="Baron Noir", path="/tv/Baron Noir")
         path_map = PathMap()
         started_at = datetime.now(timezone.utc)
 
-        await _process_episode(
-            mock_db_session, episode, path_map, started_at, "Baron Noir - Jupiter"
-        )
+        await _process_episode(mock_db_session, episode, path_map, started_at, series)
 
         result = await mock_db_session.execute(
             select(BazarrCache).where(BazarrCache.id == "episode:324")
@@ -762,12 +915,11 @@ class TestProcessEpisodePath:
             sceneName="Test.Show.S01E01.1080p.WEB.x264-GROUP",
             path="/bazarr/tv/Test Show/S01E01.mkv",
         )
+        series = Series(sonarrSeriesId=9, title="Test Show", path="/tv/Test Show")
         path_map = PathMap([("/bazarr/tv", "/local/tv")])
         started_at = datetime.now(timezone.utc)
 
-        await _process_episode(
-            mock_db_session, episode, path_map, started_at, "Test Show - Pilot"
-        )
+        await _process_episode(mock_db_session, episode, path_map, started_at, series)
 
         result = await mock_db_session.execute(
             select(BazarrCache).where(BazarrCache.id == "episode:702")
@@ -1223,6 +1375,26 @@ class TestPollAllEpisodes:
         assert "/local/tv" in cached[100].media_path  # Path was translated
         assert cached[101].has_any_subs is True
         assert "/local/tv" in cached[101].media_path
+
+        # season_number/episode_number are persisted from the Episode
+        # payload (Episode.season/Episode.episode), and `title` stays the
+        # episode's own bare title.
+        assert cached[100].title == "Test Episode"
+        assert cached[100].season_number == 1
+        assert cached[100].episode_number == 1
+        assert cached[101].title == "Test Episode 2"
+        assert cached[101].season_number == 1
+        assert cached[101].episode_number == 2
+
+        # Neither episode's sonarrSeriesId (789) matches the one series in
+        # this page (sonarrSeriesId=1), so both fall back to "Unknown
+        # series" - series_ext_id still comes from the episode itself
+        # (a required field), and sort_key is still populated.
+        assert cached[100].series_title == "Unknown series"
+        assert cached[100].series_ext_id == 789
+        assert cached[100].sort_key == library_sort_key("Unknown series")
+        assert cached[101].series_title == "Unknown series"
+        assert cached[101].series_ext_id == 789
 
     @pytest.mark.asyncio
     async def test_poll_all_episodes_survives_realistic_series_payload(
@@ -1768,7 +1940,8 @@ class TestManualPolling:
                 select(BazarrCache).where(BazarrCache.id == "episode:10")
             )
         ).scalar_one()
-        assert entry.title == "Good Series - Ep1"
+        assert entry.title == "Ep1"
+        assert entry.series_title == "Good Series"
 
         await mock_client.close()
 
@@ -1980,9 +2153,11 @@ class TestFullSyncBounding:
                 select(BazarrCache).where(BazarrCache.id == "episode:201")
             )
         ).scalar_one()
-        assert entry_101.title == "Series 1 - Ep1"
+        assert entry_101.title == "Ep1"
+        assert entry_101.series_title == "Series 1"
         assert entry_101.audio_language[0]["code2"] == "en"
-        assert entry_201.title == "Series 2 - Ep1"
+        assert entry_201.title == "Ep1"
+        assert entry_201.series_title == "Series 2"
         assert entry_201.audio_language[0]["code2"] == "es"
 
 
@@ -2151,3 +2326,22 @@ class TestFullLibrarySyncRealisticWireFormat:
         assert cached[100].missing_subtitles == []
         assert cached[101].has_any_subs is False
         assert cached[101].missing_subtitles[0]["code2"] == "en"
+
+        # This series' sonarrSeriesId (789) DOES match both episodes'
+        # sonarrSeriesId, so this - unlike the mismatched-ID mock fixture in
+        # TestPollAllEpisodes - exercises the resolved-series path through a
+        # real HTTP response: `title` is the episode's own bare title,
+        # `series_title`/`series_ext_id`/`sort_key` come from the resolved
+        # Series, and season/episode numbers round-trip from the wire JSON.
+        assert cached[100].title == "Fully Subbed Episode"
+        assert cached[100].series_title == "Test Series"
+        assert cached[100].series_ext_id == 789
+        assert cached[100].season_number == 1
+        assert cached[100].episode_number == 1
+        assert cached[100].sort_key == library_sort_key("Test Series")
+        assert cached[101].title == "Missing Sub Episode"
+        assert cached[101].series_title == "Test Series"
+        assert cached[101].series_ext_id == 789
+        assert cached[101].season_number == 1
+        assert cached[101].episode_number == 2
+        assert cached[101].sort_key == library_sort_key("Test Series")

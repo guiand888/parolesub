@@ -117,6 +117,11 @@ export interface WantedItem {
   id: string
   kind: "movie" | "episode"
   ext_id: number
+  // The item's OWN bare title: for a movie, the movie title; for an
+  // episode, the bare episode title (e.g. "Episode 1", "Pilot") - NOT a
+  // flattened "series - episode" string. Combine with series_title /
+  // season_number / episode_number below (see lib/wantedLabels.ts) to
+  // build a display label.
   title: string
   media_path: string
   has_any_subs: boolean
@@ -126,6 +131,12 @@ export interface WantedItem {
   active_job_id: string | null
   active_job_status: string | null
   active_job_progress: number | null
+  // Episode's series name; null for movies and for not-yet-backfilled rows.
+  series_title: string | null
+  // Null for movies and not-yet-backfilled episode rows.
+  season_number: number | null
+  // Null for movies and not-yet-backfilled episode rows.
+  episode_number: number | null
 }
 
 export interface WantedListResponse {

@@ -9,13 +9,20 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, nulls_last, select, text
 
 from audio_to_subs.api.deps import SettingsDep, get_db, get_redis
 from audio_to_subs.api.routes._helpers import UTCAwareModel
+from audio_to_subs.api.services.wanted_search import parse_wanted_search
 from audio_to_subs.bazarr.pathmap import PathMap
 from audio_to_subs.db.job_logs import write_job_log
-from audio_to_subs.db.models import BazarrCache, Job, JobStatus, LogLevel
+from audio_to_subs.db.models import (
+    SEASON_ORDER_BUCKET_SQL,
+    BazarrCache,
+    Job,
+    JobStatus,
+    LogLevel,
+)
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis
@@ -29,6 +36,51 @@ router = APIRouter(prefix="/api/wanted", tags=["wanted"])
 # holds a weak reference to a task created via create_task, so an unreferenced
 # task is eligible for GC mid-run (see asyncio docs on create_task).
 _background_refresh_tasks: set[asyncio.Task[Any]] = set()
+
+# Default ordering for GET /api/wanted, applied on every code path that
+# builds the base query (see `list_wanted`). Sorting purely by
+# `func.lower(BazarrCache.title)` (the pre-migration-0007 behavior) breaks
+# down two ways: (1) it's lexicographic, not numeric, so "Episode 10" sorts
+# before "Episode 2"; (2) `title` is now the item's own bare title (e.g.
+# every season's generic "Episode 1"), so unrelated episodes across
+# different series/seasons with the same bare title come back in
+# arbitrary order across pages. The tie-break chain below sorts by the
+# series/movie's natural display order first (`sort_key`, precomputed by
+# `library_sort_key()`), then groups a series' own rows together
+# (`kind`, `series_ext_id`), then orders within a series by season
+# (regular seasons before specials/season 0 before unknown-season rows),
+# then by episode number, and finally by `id` as a deterministic
+# tie-breaker so pagination never reshuffles rows between requests.
+#
+# `sort_key` is NULL for a row not yet touched by a sync since migration
+# 0007 (or, in principle, if `library_sort_key()` were ever given an empty
+# name). SQLite sorts NULL before every non-NULL value in ascending order,
+# so a plain `ORDER BY sort_key` would put those rows at the very top of
+# page 1 - ahead of "Avatar" - which is the opposite of the "unknowns last"
+# treatment already applied to `season_number` below. `nulls_last()` fixes
+# that; confirmed with EXPLAIN QUERY PLAN that it doesn't cost the
+# index-satisfied ordering below (NULLs are already contiguous at one end
+# of the index, so SQLite just scans from the other end - no extra sort
+# step either way).
+#
+# The season-bucket term is built from `text(SEASON_ORDER_BUCKET_SQL)` -
+# the exact same literal SQL string the `ix_bazarr_cache_sort` index (see
+# db/models.py) is built from - rather than a SQLAlchemy `case()`
+# construct. `case()` compiles its THEN/ELSE values as bound `?`
+# parameters by default, which SQLite's planner never recognizes as
+# matching an expression index (confirmed with EXPLAIN QUERY PLAN, see
+# tests/test_api_wanted.py): it falls back to a full table scan plus a
+# temp-B-tree sort of every row. The literal `text()` form lets SQLite
+# satisfy this entire ORDER BY straight from the index instead.
+_WANTED_ORDER = (
+    nulls_last(BazarrCache.sort_key),
+    BazarrCache.kind,
+    BazarrCache.series_ext_id,
+    text(SEASON_ORDER_BUCKET_SQL),
+    BazarrCache.season_number,
+    BazarrCache.episode_number,
+    BazarrCache.id,
+)
 
 
 class WantedItemType(str, Enum):
@@ -60,6 +112,15 @@ class WantedItem(UTCAwareModel):
     kind: str = Field(description="Item kind: 'movie' or 'episode'")
     ext_id: int = Field(description="External ID (Radarr or Sonarr ID)")
     title: str = Field(description="Item title")
+    series_title: str | None = Field(
+        default=None, description="Series name (episodes only; null for movies)"
+    )
+    season_number: int | None = Field(
+        default=None, description="Season number (episodes only; null for movies)"
+    )
+    episode_number: int | None = Field(
+        default=None, description="Episode number (episodes only; null for movies)"
+    )
     media_path: str = Field(description="Translated media file path")
     has_any_subs: bool = Field(description="Whether item has any subtitles")
     missing_subtitles: list[dict[str, Any]] = Field(
@@ -152,6 +213,9 @@ def _to_wanted_item(
         kind=item.kind,
         ext_id=item.ext_id,
         title=item.title,
+        series_title=item.series_title,
+        season_number=item.season_number,
+        episode_number=item.episode_number,
         media_path=item.media_path,
         has_any_subs=item.has_any_subs,
         missing_subtitles=item.missing_subtitles,
@@ -206,25 +270,45 @@ async def list_wanted(  # noqa: C901
     - page: Page number (1-based)
     - page_size: Items per page
     """
-    # Build base query. Ordered alphabetically by title (case-insensitive) so
+    # Build base query. Ordered via `_WANTED_ORDER` (see its definition) so
     # the default sort is a true global order across pages, not just within
     # the page returned - the frontend's client-side sort only re-orders the
     # single page it receives, so pagination must already hand back pages in
-    # title order for cross-page results to look sorted.
-    query = select(BazarrCache).order_by(func.lower(BazarrCache.title))
+    # the right order for cross-page results to look sorted.
+    query = select(BazarrCache).order_by(*_WANTED_ORDER)
 
     # Apply type filter
     if item_type != WantedItemType.ALL:
         query = query.where(BazarrCache.kind == item_type.value)
 
-    # Apply search filter (case-insensitive title match). Escape LIKE
-    # wildcards in the user's input so a literal "%" or "_" in a title search
-    # matches literally instead of acting as a pattern wildcard.
+    # Apply search filter. `search` may embed an episode code (e.g. "S04E01",
+    # "4x01") alongside free text (e.g. "agency s04") - parse_wanted_search
+    # splits those apart. Escape LIKE wildcards in the remaining free text so
+    # a literal "%" or "_" in a title search matches literally instead of
+    # acting as a pattern wildcard.
     if search:
-        escaped_search = (
-            search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        )
-        query = query.where(BazarrCache.title.ilike(f"%{escaped_search}%", escape="\\"))
+        parsed_search = parse_wanted_search(search)
+        if parsed_search.text:
+            escaped_search = (
+                parsed_search.text.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            query = query.where(
+                BazarrCache.title.ilike(f"%{escaped_search}%", escape="\\")
+                | BazarrCache.series_title.ilike(f"%{escaped_search}%", escape="\\")
+            )
+        if parsed_search.season is not None:
+            # A season/episode code only makes sense for an episode, so this
+            # combines with `item_type=movie` (an AND, not a fallback) to
+            # produce a guaranteed-empty result rather than silently
+            # dropping back to a plain-text search - the caller explicitly
+            # asked for movies only *and* typed something that only matches
+            # episodes, so an empty result is the honest answer.
+            query = query.where(BazarrCache.kind == "episode")
+            query = query.where(BazarrCache.season_number == parsed_search.season)
+            if parsed_search.episode is not None:
+                query = query.where(BazarrCache.episode_number == parsed_search.episode)
 
     # scope=no_subs can be expressed in SQL directly. scope=missing needs
     # Python-side filtering (see below) since SQLite has no json_contains

@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { api, ApiError } from "@/lib/api"
 import { useJobsStream } from "@/hooks/useJobsStream"
 import { IDLE, useRefreshStore } from "@/lib/refreshStore"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { WantedPage } from "./WantedPage"
 
 // vi.mock calls are hoisted to the top of the file by vitest, so they must be
@@ -138,7 +139,13 @@ function wrapper({ children }: { children: React.ReactNode }) {
   })
   return (
     <QueryClientProvider client={client}>
-      <StreamMount>{children}</StreamMount>
+      {/* The real app mounts TooltipProvider once in AppLayout; this test
+          harness doesn't render AppLayout, so it's added here instead - the
+          S/E cell's tooltip needs it, with delayDuration=0 so
+          userEvent.hover/focus opens it synchronously. */}
+      <TooltipProvider delayDuration={0}>
+        <StreamMount>{children}</StreamMount>
+      </TooltipProvider>
     </QueryClientProvider>
   )
 }
@@ -270,6 +277,9 @@ const MOCK_ITEM_WITH_AUDIO_LANG = {
   active_job_id: null,
   active_job_status: null,
   active_job_progress: null,
+  series_title: null,
+  season_number: null,
+  episode_number: null,
 }
 
 const MOCK_ITEM_NO_AUDIO_LANG = {
@@ -1228,13 +1238,17 @@ describe("WantedPage - Transcribe error handling", () => {
   })
 })
 
-describe("WantedPage - Default title sort & search", () => {
-  const MOCK_TITLE_ITEMS = [
+describe("WantedPage - Series/Movie column, server-order, and S/E cell", () => {
+  // Deliberately NOT alphabetical and NOT grouped by kind - the point of
+  // this fixture is to prove the client renders exactly what the server
+  // sent, in that order, rather than re-deriving its own sort (see the
+  // removed client-side `naturalCompare` sort in WantedPage.tsx).
+  const MOCK_SERIES_ITEMS = [
     {
       id: "movie:3",
       kind: "movie",
       ext_id: 3,
-      title: "zebra Movie",
+      title: "Zebra Movie",
       media_path: "/movies/zebra.mkv",
       has_any_subs: false,
       missing_subtitles: [{ code2: "en", name: "English", hi: false, forced: false }],
@@ -1243,6 +1257,27 @@ describe("WantedPage - Default title sort & search", () => {
       active_job_id: null,
       active_job_status: null,
       active_job_progress: null,
+      series_title: null,
+      season_number: null,
+      episode_number: null,
+    },
+    {
+      id: "episode:1",
+      kind: "episode",
+      ext_id: 1,
+      // Bare episode title - NOT the old flattened "series - episode" string.
+      title: "Pilot",
+      media_path: "/series/breaking-bad/s01e01.mkv",
+      has_any_subs: false,
+      missing_subtitles: [{ code2: "en", name: "English", hi: false, forced: false }],
+      audio_language: [{ code2: "en", code3: "eng", name: "English", hi: false, forced: false }],
+      last_polled: "2024-01-02T00:00:00Z",
+      active_job_id: null,
+      active_job_status: null,
+      active_job_progress: null,
+      series_title: "Breaking Bad",
+      season_number: 1,
+      episode_number: 1,
     },
     {
       id: "movie:1",
@@ -1253,135 +1288,133 @@ describe("WantedPage - Default title sort & search", () => {
       has_any_subs: false,
       missing_subtitles: [{ code2: "en", name: "English", hi: false, forced: false }],
       audio_language: [{ code2: "en", code3: "eng", name: "English", hi: false, forced: false }],
-      last_polled: "2024-01-02T00:00:00Z",
-      active_job_id: null,
-      active_job_status: null,
-      active_job_progress: null,
-    },
-    {
-      id: "movie:2",
-      kind: "movie",
-      ext_id: 2,
-      title: "mango Movie",
-      media_path: "/movies/mango.mkv",
-      has_any_subs: false,
-      missing_subtitles: [{ code2: "en", name: "English", hi: false, forced: false }],
-      audio_language: [{ code2: "en", code3: "eng", name: "English", hi: false, forced: false }],
       last_polled: "2024-01-03T00:00:00Z",
       active_job_id: null,
       active_job_status: null,
       active_job_progress: null,
+      series_title: null,
+      season_number: null,
+      episode_number: null,
     },
   ]
 
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(api.get).mockResolvedValue({
-      items: MOCK_TITLE_ITEMS,
-      total: MOCK_TITLE_ITEMS.length,
+      items: MOCK_SERIES_ITEMS,
+      total: MOCK_SERIES_ITEMS.length,
       last_refreshed_at: null,
     })
     vi.mocked(api.post).mockResolvedValue(MOCK_REFRESH_STARTED)
   })
 
-  it("sorts items alphabetically by title by default, ignoring case", async () => {
+  async function renderedRows() {
+    const table = await waitFor(() => screen.getByRole("table"))
+    // First row is the header; the rest are item rows.
+    const dataRows = within(table).getAllByRole("row").slice(1)
+    expect(dataRows.length).toBe(MOCK_SERIES_ITEMS.length)
+    return dataRows
+  }
+
+  it("shows Series / Movie and S/E headers, no Title column", async () => {
     render(<WantedPage />, { wrapper })
 
-    const rows = await waitFor(() => {
-      const all = within(screen.getByRole("table")).getAllByRole("row")
-      // First row is the header; the rest are item rows.
-      const dataRows = all.slice(1)
-      expect(dataRows.length).toBe(MOCK_TITLE_ITEMS.length)
-      return dataRows
+    await waitFor(() => {
+      expect(screen.getByRole("columnheader", { name: "Series / Movie" })).toBeInTheDocument()
     })
-
-    const renderedTitles = rows.map((row) =>
-      within(row).getAllByRole("cell")[0].textContent,
-    )
-    expect(renderedTitles).toEqual(["Alpha Movie", "mango Movie", "zebra Movie"])
+    expect(screen.getByRole("columnheader", { name: "S/E" })).toBeInTheDocument()
+    expect(screen.queryByRole("columnheader", { name: "Title" })).not.toBeInTheDocument()
   })
 
-  it("sorts titles with embedded numbers by magnitude (natural sort), not lexicographically", async () => {
-    vi.mocked(api.get).mockResolvedValue({
-      items: [
-        {
-          id: "ep:100",
-          kind: "episode",
-          ext_id: 100,
-          title: "Show — Episode 100",
-          media_path: "/series/s100.mkv",
-          has_any_subs: false,
-          missing_subtitles: [{ code2: "en", name: "English", hi: false, forced: false }],
-          audio_language: [{ code2: "en", code3: "eng", name: "English", hi: false, forced: false }],
-          last_polled: "2024-01-01T00:00:00Z",
-          active_job_id: null,
-          active_job_status: null,
-          active_job_progress: null,
-        },
-        {
-          id: "ep:10",
-          kind: "episode",
-          ext_id: 10,
-          title: "Show — Episode 10",
-          media_path: "/series/s10.mkv",
-          has_any_subs: false,
-          missing_subtitles: [{ code2: "en", name: "English", hi: false, forced: false }],
-          audio_language: [{ code2: "en", code3: "eng", name: "English", hi: false, forced: false }],
-          last_polled: "2024-01-02T00:00:00Z",
-          active_job_id: null,
-          active_job_status: null,
-          active_job_progress: null,
-        },
-        {
-          id: "ep:1",
-          kind: "episode",
-          ext_id: 1,
-          title: "Show — Episode 1",
-          media_path: "/series/s1.mkv",
-          has_any_subs: false,
-          missing_subtitles: [{ code2: "en", name: "English", hi: false, forced: false }],
-          audio_language: [{ code2: "en", code3: "eng", name: "English", hi: false, forced: false }],
-          last_polled: "2024-01-03T00:00:00Z",
-          active_job_id: null,
-          active_job_status: null,
-          active_job_progress: null,
-        },
-        {
-          id: "ep:2",
-          kind: "episode",
-          ext_id: 2,
-          title: "Show — Episode 2",
-          media_path: "/series/s2.mkv",
-          has_any_subs: false,
-          missing_subtitles: [{ code2: "en", name: "English", hi: false, forced: false }],
-          audio_language: [{ code2: "en", code3: "eng", name: "English", hi: false, forced: false }],
-          last_polled: "2024-01-04T00:00:00Z",
-          active_job_id: null,
-          active_job_status: null,
-          active_job_progress: null,
-        },
-      ],
-      total: 4,
-      last_refreshed_at: null,
-    })
-
+  it("renders rows in exactly the order the server returned, without re-sorting", async () => {
     render(<WantedPage />, { wrapper })
 
-    const rows = await waitFor(() => {
-      const dataRows = within(screen.getByRole("table")).getAllByRole("row").slice(1)
-      expect(dataRows.length).toBe(4)
-      return dataRows
+    const rows = await renderedRows()
+    const renderedNames = rows.map((row) => within(row).getAllByRole("cell")[0].textContent)
+    // Server order is movie "Zebra Movie", episode "Breaking Bad", movie
+    // "Alpha Movie" - alphabetically that would be Alpha/Breaking Bad/Zebra,
+    // so this only passes if the client does NOT re-sort.
+    expect(renderedNames).toEqual(["Zebra Movie", "Breaking Bad", "Alpha Movie"])
+  })
+
+  it("shows the series name (not the bare episode title) for an episode row", async () => {
+    render(<WantedPage />, { wrapper })
+
+    const rows = await renderedRows()
+    const episodeRow = rows[1]
+    expect(within(episodeRow).getAllByRole("cell")[0].textContent).toBe("Breaking Bad")
+  })
+
+  it("renders a zero-padded S/E code for an episode and '—' for a movie", async () => {
+    render(<WantedPage />, { wrapper })
+
+    const rows = await renderedRows()
+    const seCode = (row: HTMLElement) => within(row).getAllByRole("cell")[1].textContent
+    expect(seCode(rows[0])).toBe("—") // Zebra Movie
+    expect(seCode(rows[1])).toBe("S01E01") // Breaking Bad · Pilot
+    expect(seCode(rows[2])).toBe("—") // Alpha Movie
+  })
+
+  it("shows the bare episode title in a tooltip when the S/E cell is hovered", async () => {
+    const user = userEvent.setup()
+    render(<WantedPage />, { wrapper })
+
+    const rows = await renderedRows()
+    const seCell = within(rows[1]).getAllByRole("cell")[1]
+
+    await user.hover(within(seCell).getByText("S01E01"))
+
+    // Radix renders the visible tooltip content plus a visually-hidden
+    // role="tooltip" span for a11y; assert via the role rather than text
+    // (the text itself may appear twice while open).
+    const tooltip = await screen.findByRole("tooltip")
+    expect(tooltip).toHaveTextContent("Pilot")
+  })
+
+  it("shows the same tooltip on keyboard focus (a11y)", async () => {
+    render(<WantedPage />, { wrapper })
+
+    const rows = await renderedRows()
+    const seCell = within(rows[1]).getAllByRole("cell")[1]
+    const trigger = within(seCell).getByText("S01E01")
+
+    act(() => {
+      trigger.focus()
     })
 
-    const renderedTitles = rows.map((row) =>
-      within(row).getAllByRole("cell")[0].textContent,
-    )
-    expect(renderedTitles).toEqual([
-      "Show — Episode 1",
-      "Show — Episode 2",
-      "Show — Episode 10",
-      "Show — Episode 100",
-    ])
+    const tooltip = await screen.findByRole("tooltip")
+    expect(tooltip).toHaveTextContent("Pilot")
+  })
+
+  it("does not wrap a movie's '—' S/E cell in a tooltip trigger", async () => {
+    const user = userEvent.setup()
+    render(<WantedPage />, { wrapper })
+
+    const rows = await renderedRows()
+    const seCell = within(rows[0]).getAllByRole("cell")[1] // Zebra Movie
+    await user.hover(within(seCell).getByText("—"))
+
+    // No episode title to show for a movie, so no tooltip should open.
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+  })
+
+  it("shows the full composed label in the Transcribe dialog header for an episode", async () => {
+    const user = userEvent.setup()
+    render(<WantedPage />, { wrapper })
+
+    await waitFor(() => {
+      expect(screen.getByText("Breaking Bad")).toBeInTheDocument()
+    })
+
+    const rows = await renderedRows()
+    const episodeRow = rows[1]
+    await user.click(within(episodeRow).getByText("Transcribe"))
+
+    await waitFor(() => {
+      expect(screen.getByText("Breaking Bad · S01E01 · Pilot")).toBeInTheDocument()
+    })
+    // The old flattened format must not appear anywhere in the dialog.
+    expect(screen.queryByText("Breaking Bad - Pilot")).not.toBeInTheDocument()
   })
 
   it("sends the typed search term to the server instead of filtering client-side", async () => {
@@ -1396,7 +1429,7 @@ describe("WantedPage - Default title sort & search", () => {
       expect(screen.getByText("Alpha Movie")).toBeInTheDocument()
     })
 
-    await user.type(screen.getByPlaceholderText("Search…"), "MAN")
+    await user.type(screen.getByPlaceholderText("Search title or S01E02…"), "MAN")
 
     await waitFor(() => {
       expect(api.get).toHaveBeenLastCalledWith(

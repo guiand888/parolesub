@@ -74,13 +74,18 @@ Append-only milestone log; backs the Logs page.
 | `id` | `TEXT PK` | "movie:{radarrId}" or "episode:{sonarrEpisodeId}" |
 | `kind` | `TEXT NOT NULL` | movie, episode |
 | `ext_id` | `INTEGER NOT NULL` | radarrId or sonarrEpisodeId |
-| `title` | `TEXT NOT NULL` | |
+| `title` | `TEXT NOT NULL` | For episodes, this is now the bare episode title — see `series_title` for the series name — as of migration 0007; previously this was a flattened `"<series> - <episode>"` string. |
 | `subtitle_display` | `TEXT NULL` | "1x01 - Pilot" for episodes |
 | `media_path_bazarr` | `TEXT NULL` | Raw path from Bazarr |
 | `missing_subtitles_json` | `TEXT NOT NULL` | JSON array of subtitle info |
 | `has_any_subs` | `INTEGER NOT NULL` | 0/1 |
 | `raw_json` | `TEXT NOT NULL` | Full Bazarr payload |
 | `fetched_at` | `TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP` | |
+| `series_title` | `TEXT NULL` | Episode's series name; NULL for movies and for pre-0007 rows not yet re-synced (migration 0007) |
+| `series_ext_id` | `INTEGER NULL` | Sonarr series id; NULL for movies (migration 0007) |
+| `season_number` | `INTEGER NULL` | From Bazarr's episode payload; NULL for movies (migration 0007) |
+| `episode_number` | `INTEGER NULL` | From Bazarr's episode payload; NULL for movies (migration 0007) |
+| `sort_key` | `TEXT NULL` | Article-insensitive, natural-number-aware sort key over the series/movie display name, from `library_sort_key()` (`audio_to_subs/core/library_sort.py`); recomputed on every sync (migration 0007) |
 
 ## Indexes
 
@@ -90,8 +95,17 @@ CREATE INDEX ix_jobs_history ON jobs(status, finished_at DESC);
 CREATE INDEX ix_jobs_dedupe ON jobs(source, source_ref);
 CREATE INDEX ix_job_logs_job_ts ON job_logs(job_id, ts);
 CREATE INDEX ix_bazarr_cache_kind_hasany ON bazarr_cache(kind, has_any_subs);
+CREATE INDEX ix_bazarr_cache_sort ON bazarr_cache(
+    sort_key, kind, series_ext_id,
+    (CASE WHEN season_number IS NULL THEN 2 WHEN season_number = 0 THEN 1 ELSE 0 END),
+    season_number, episode_number, id
+);
 ```
 
 ## Alembic
 
 Alembic from day 1. Migration commands run inside the backend container. FastAPI lifespan and worker boot both run `alembic upgrade head`.
+
+Latest migration: `0007_bazarr_cache_structured_episode` — adds `bazarr_cache.series_title` / `series_ext_id` / `season_number` / `episode_number` / `sort_key` (all nullable; see the `bazarr_cache` table above) and the `ix_bazarr_cache_sort` index. Additive-only; existing rows are backfilled by the next full Bazarr sync (runs at startup), not by the migration itself.
+
+`ix_bazarr_cache_sort` covers every term of the Wanted list's default ORDER BY (`sort_key`, `kind`, `series_ext_id`, a season bucket, `season_number`, `episode_number`, `id`), so SQLite satisfies the whole sort straight from the index with no temp-B-tree step. The bucket term has to be the literal SQL string above (also in `SEASON_ORDER_BUCKET_SQL`, `audio_to_subs/db/models.py`) rather than a SQLAlchemy `case()` construct in the ORM query — `case()`'s branch values compile to bound `?` parameters by default, which SQLite's planner never matches to an expression index, so it silently falls back to a full scan and sort instead.

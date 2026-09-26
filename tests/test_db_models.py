@@ -275,3 +275,93 @@ async def test_bazarr_cache_make_id():
     """Test BazarrCache.make_id method."""
     assert BazarrCache.make_id("movie", 123) == "movie:123"
     assert BazarrCache.make_id("episode", 456) == "episode:456"
+
+
+@pytest.mark.asyncio
+async def test_bazarr_cache_structured_episode_fields_round_trip():
+    """The migration-0007 columns (series_title, series_ext_id,
+    season_number, episode_number, sort_key) persist and re-fetch
+    correctly for an episode row."""
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    async with engine.begin() as conn:
+        from audio_to_subs.db.base import Base
+
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with AsyncSession(engine) as session:
+        cache = BazarrCache(
+            id="episode:789",
+            kind="episode",
+            ext_id=789,
+            title="Episode 1",
+            series_title="Test Series",
+            series_ext_id=42,
+            season_number=3,
+            episode_number=1,
+            sort_key="test series",
+            media_path="/tv/test-series/s03e01.mkv",
+            has_any_subs=False,
+            missing_subtitles=[{"code2": "en", "code3": "eng"}],
+        )
+        session.add(cache)
+        await session.commit()
+        await session.refresh(cache)
+
+        # Fetch fresh from the DB (not just the in-memory object) to make
+        # sure the values actually round-trip through the columns.
+        result = await session.execute(
+            select(BazarrCache).where(BazarrCache.id == "episode:789")
+        )
+        fetched = result.scalar_one_or_none()
+        assert fetched is not None
+        assert fetched.series_title == "Test Series"
+        assert fetched.series_ext_id == 42
+        assert fetched.season_number == 3
+        assert fetched.episode_number == 1
+        assert fetched.sort_key == "test series"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_bazarr_cache_structured_episode_fields_default_to_none():
+    """For a movie row (or any row that omits them), the migration-0007
+    columns default to NULL/None rather than requiring a value."""
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    async with engine.begin() as conn:
+        from audio_to_subs.db.base import Base
+
+        await conn.run_sync(Base.metadata.create_all)
+
+    async with AsyncSession(engine) as session:
+        cache = BazarrCache(
+            id="movie:321",
+            kind="movie",
+            ext_id=321,
+            title="Test Movie",
+            media_path="/movies/test-movie.mkv",
+            has_any_subs=False,
+            missing_subtitles=[],
+        )
+        session.add(cache)
+        await session.commit()
+        await session.refresh(cache)
+
+        result = await session.execute(
+            select(BazarrCache).where(BazarrCache.id == "movie:321")
+        )
+        fetched = result.scalar_one_or_none()
+        assert fetched is not None
+        assert fetched.series_title is None
+        assert fetched.series_ext_id is None
+        assert fetched.season_number is None
+        assert fetched.episode_number is None
+        assert fetched.sort_key is None
+
+    await engine.dispose()

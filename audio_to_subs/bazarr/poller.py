@@ -17,6 +17,7 @@ from sqlalchemy import delete, or_, select
 
 from audio_to_subs.bazarr.client import BazarrClient
 from audio_to_subs.bazarr.pathmap import PathMap
+from audio_to_subs.core.library_sort import library_sort_key
 from audio_to_subs.db.job_logs import write_job_log
 from audio_to_subs.db.models import BazarrCache, LogLevel
 
@@ -25,7 +26,13 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from audio_to_subs.api.settings import Settings
-    from audio_to_subs.bazarr.schemas import Episode, Movie, MoviesPage, SeriesPage
+    from audio_to_subs.bazarr.schemas import (
+        Episode,
+        Movie,
+        MoviesPage,
+        Series,
+        SeriesPage,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -486,6 +493,12 @@ async def _upsert_cache_entry(
     missing_subtitles: list[Any] | None,
     started_at: datetime,
     audio_language: list[Any] | None = None,
+    *,
+    series_title: str | None = None,
+    series_ext_id: int | None = None,
+    season_number: int | None = None,
+    episode_number: int | None = None,
+    sort_key: str | None = None,
 ) -> None:
     """Upsert a Bazarr cache entry (select-update/insert pattern).
 
@@ -498,12 +511,22 @@ async def _upsert_cache_entry(
         cache_id: Unique cache ID
         kind: "movie" or "episode"
         ext_id: External ID (radarrId or sonarrEpisodeId)
-        title: Display title
+        title: The item's own bare title - the movie title, or the
+            episode's own title (e.g. "Episode 1"/"Pilot"). Never the
+            flattened "<series> - <episode>" string.
         media_path: Path to media file
         has_any_subs: Whether the item has any subtitles
         missing_subtitles: List of missing language objects
         started_at: Poll start time
         audio_language: List of audio language objects, if known
+        series_title: Episode-only - the resolved series title (or "Unknown
+            series"). None for movies.
+        series_ext_id: Episode-only - the Sonarr series ID (episode.sonarrSeriesId).
+            None for movies.
+        season_number: Episode-only - the season number. None for movies.
+        episode_number: Episode-only - the episode number. None for movies.
+        sort_key: Article-insensitive, natural-number sort key
+            (`library_sort_key()`) for the series (episodes) or movie title.
     """
     result = await db.execute(select(BazarrCache).where(BazarrCache.id == cache_id))
     existing = result.scalar_one_or_none()
@@ -519,6 +542,11 @@ async def _upsert_cache_entry(
         existing.missing_subtitles = missing_subs_list
         existing.audio_language = audio_lang_list
         existing.last_polled = started_at
+        existing.series_title = series_title
+        existing.series_ext_id = series_ext_id
+        existing.season_number = season_number
+        existing.episode_number = episode_number
+        existing.sort_key = sort_key
     else:
         # Insert new record
         cache_entry = BazarrCache(
@@ -532,6 +560,11 @@ async def _upsert_cache_entry(
             audio_language=audio_lang_list,
             last_polled=started_at,
             active_job_id=None,
+            series_title=series_title,
+            series_ext_id=series_ext_id,
+            season_number=season_number,
+            episode_number=episode_number,
+            sort_key=sort_key,
         )
         db.add(cache_entry)
 
@@ -577,6 +610,7 @@ async def _process_movie(
         movie.missing_subtitles,
         started_at,
         movie.audio_language,
+        sort_key=library_sort_key(movie.title),
     )
 
 
@@ -585,7 +619,7 @@ async def _process_episode(
     episode: "Episode",
     path_map: PathMap,
     started_at: datetime,
-    title: str,
+    series: "Series | None",
 ) -> None:
     """Process a single episode from Bazarr's full `/api/episodes` listing.
 
@@ -596,9 +630,14 @@ async def _process_episode(
             missing_subtitles, so no separate detail fetch is needed.
         path_map: PathMap for path translation
         started_at: Poll start time
-        title: Display title ("<series title> - <episode title>"), composed
-            by the caller since a per-episode payload doesn't carry its
-            series' title.
+        series: The series this episode belongs to, resolved by the caller
+            from the series listing (or None if it couldn't be resolved -
+            e.g. an episode whose sonarrSeriesId doesn't match any series in
+            the page). `episode.title` is stored as-is (the episode's own
+            bare title, never flattened with the series title); the series'
+            title is stored separately in `series_title` ("Unknown series"
+            when `series` is None) so the Wanted page can group/display
+            season and episode numbers per series.
     """
     # Resolve media_path: prefer the authoritative `path` field, fall back to
     # sceneName (often null).
@@ -614,17 +653,26 @@ async def _process_episode(
 
     cache_id = BazarrCache.make_id("episode", episode.sonarrEpisodeId)
 
+    series_title = series.title if series is not None else "Unknown series"
+
     await _upsert_cache_entry(
         db,
         cache_id,
         "episode",
         episode.sonarrEpisodeId,
-        title,
+        episode.title,
         media_path,
         has_any_subs,
         episode.missing_subtitles,
         started_at,
         episode.audio_language,
+        series_title=series_title,
+        # sonarrSeriesId is a required field on every Episode, so this is
+        # always known even when the series lookup itself failed.
+        series_ext_id=episode.sonarrSeriesId,
+        season_number=episode.season,
+        episode_number=episode.episode,
+        sort_key=library_sort_key(series_title),
     )
 
 
@@ -765,9 +813,7 @@ async def _poll_all_episodes(
 
         for episode in episodes_page.data:
             series = series_by_id.get(episode.sonarrSeriesId)
-            series_title = series.title if series is not None else "Unknown series"
-            title = f"{series_title} - {episode.title}"
-            await _process_episode(db, episode, path_map, started_at, title)
+            await _process_episode(db, episode, path_map, started_at, series)
             processed += 1
             if reporter is not None:
                 await reporter.step()

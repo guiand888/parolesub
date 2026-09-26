@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from audio_to_subs.core.library_sort import library_sort_key
 from audio_to_subs.db.models import BazarrCache, JobLog, JobStatus, LogLevel
 
 
@@ -348,6 +349,506 @@ class TestListWantedEndpoint:
         data = response.json()
         assert data["total"] == 3  # all three seeded items are missing >=1 language
         assert len(data["items"]) == 1
+
+    # --- Ordering regression tests (migration 0007 sort fields) -----------
+
+    _ORDERING_EXPECTED_IDS = [
+        "movie:1",
+        "episode:101",
+        "episode:102",
+        "episode:103",
+        "episode:104",
+        "episode:105",
+        "episode:201",
+    ]
+
+    def _seed_ordering_series(self, sync_session):
+        """Seed a movie plus two series, interleaved, to exercise the full
+        ORDER BY chain: sort_key -> kind -> series_ext_id -> season bucket
+        (regular < specials/season 0 < unknown) -> season_number ->
+        episode_number -> id.
+
+        sort_key is computed with library_sort_key (never hardcoded) so this
+        test tracks the real algorithm (including article-stripping: "The
+        Parisian Agency" sorts as "parisian agency", ahead of "Zeta" but
+        behind "Avatar").
+        """
+        parisian_sort_key = library_sort_key("The Parisian Agency")
+        zeta_sort_key = library_sort_key("Zeta")
+        avatar_sort_key = library_sort_key("Avatar")
+        now = datetime.now(timezone.utc)
+
+        items = [
+            BazarrCache(
+                id="movie:1",
+                kind="movie",
+                ext_id=1,
+                title="Avatar",
+                media_path="/data/movies/avatar.mkv",
+                has_any_subs=False,
+                missing_subtitles=[],
+                last_polled=now,
+                sort_key=avatar_sort_key,
+            ),
+            # Deliberately inserted out of expected order to prove the DB
+            # query - not insertion order - determines the response order.
+            BazarrCache(
+                id="episode:103",
+                kind="episode",
+                ext_id=103,
+                title="Episode 1",
+                series_title="The Parisian Agency",
+                series_ext_id=100,
+                season_number=4,
+                episode_number=1,
+                media_path="/data/series/parisian/s04e01.mkv",
+                has_any_subs=False,
+                missing_subtitles=[],
+                last_polled=now,
+                sort_key=parisian_sort_key,
+            ),
+            BazarrCache(
+                id="episode:201",
+                kind="episode",
+                ext_id=201,
+                title="Episode 1",
+                series_title="Zeta",
+                series_ext_id=200,
+                season_number=1,
+                episode_number=1,
+                media_path="/data/series/zeta/s01e01.mkv",
+                has_any_subs=False,
+                missing_subtitles=[],
+                last_polled=now,
+                sort_key=zeta_sort_key,
+            ),
+            BazarrCache(
+                id="episode:102",
+                kind="episode",
+                ext_id=102,
+                title="Episode 10",
+                series_title="The Parisian Agency",
+                series_ext_id=100,
+                season_number=1,
+                episode_number=10,
+                media_path="/data/series/parisian/s01e10.mkv",
+                has_any_subs=False,
+                missing_subtitles=[],
+                last_polled=now,
+                sort_key=parisian_sort_key,
+            ),
+            BazarrCache(
+                id="episode:105",
+                kind="episode",
+                ext_id=105,
+                title="Unresolved Episode",
+                series_title="The Parisian Agency",
+                series_ext_id=100,
+                season_number=None,
+                episode_number=None,
+                media_path="/data/series/parisian/unknown.mkv",
+                has_any_subs=False,
+                missing_subtitles=[],
+                last_polled=now,
+                sort_key=parisian_sort_key,
+            ),
+            BazarrCache(
+                id="episode:104",
+                kind="episode",
+                ext_id=104,
+                title="Special: Behind the Scenes",
+                series_title="The Parisian Agency",
+                series_ext_id=100,
+                season_number=0,
+                episode_number=1,
+                media_path="/data/series/parisian/s00e01.mkv",
+                has_any_subs=False,
+                missing_subtitles=[],
+                last_polled=now,
+                sort_key=parisian_sort_key,
+            ),
+            BazarrCache(
+                id="episode:101",
+                kind="episode",
+                ext_id=101,
+                title="Episode 2",
+                series_title="The Parisian Agency",
+                series_ext_id=100,
+                season_number=1,
+                episode_number=2,
+                media_path="/data/series/parisian/s01e02.mkv",
+                has_any_subs=False,
+                missing_subtitles=[],
+                last_polled=now,
+                sort_key=parisian_sort_key,
+            ),
+        ]
+        sync_session.add_all(items)
+        sync_session.commit()
+        return items
+
+    def test_list_wanted_orders_by_sort_key_kind_season_episode(
+        self, sync_session, authenticated_client
+    ):
+        """Regression test for the ordering bug: with real sort/season/
+        episode data, results must come back as Avatar, then the Parisian
+        Agency's episodes in season/episode order (regular seasons before
+        the season-0 special before the unknown-season episode), then
+        Zeta - never lexicographic-by-bare-title order."""
+        self._seed_ordering_series(sync_session)
+
+        response = authenticated_client.get("/api/wanted")
+        assert response.status_code == 200
+        ids = [i["id"] for i in response.json()["items"]]
+        assert ids == self._ORDERING_EXPECTED_IDS
+
+    def test_list_wanted_order_preserved_across_pages(
+        self, sync_session, authenticated_client
+    ):
+        """Pagination must not reshuffle rows: concatenating small pages
+        must reproduce the same global order as a single unpaged request."""
+        self._seed_ordering_series(sync_session)
+
+        collected: list[str] = []
+        page = 1
+        while len(collected) < len(self._ORDERING_EXPECTED_IDS):
+            response = authenticated_client.get(
+                "/api/wanted", params={"page": page, "page_size": 2}
+            )
+            assert response.status_code == 200
+            page_items = response.json()["items"]
+            if not page_items:
+                break
+            collected.extend(i["id"] for i in page_items)
+            page += 1
+
+        assert collected == self._ORDERING_EXPECTED_IDS
+
+    @pytest.mark.parametrize("params", [{"scope": "missing"}, {"language": "en"}])
+    def test_list_wanted_order_preserved_on_python_filtered_path(
+        self, sync_session, authenticated_client, params
+    ):
+        """scope=missing and language=<code> run through the Python-side
+        filter branch of list_wanted, which loads `all_items` from the base
+        query before slicing in Python. That base query must carry the same
+        ORDER BY as the plain SQL path, or this branch silently reverts to
+        whatever order SQLite happens to return rows in."""
+        items = self._seed_ordering_series(sync_session)
+        for item in items:
+            item.missing_subtitles = [{"code2": "en"}]
+        sync_session.commit()
+
+        response = authenticated_client.get("/api/wanted", params=params)
+        assert response.status_code == 200
+        ids = [i["id"] for i in response.json()["items"]]
+        assert ids == self._ORDERING_EXPECTED_IDS
+
+    def test_list_wanted_null_sort_key_sorts_last_not_first(
+        self, sync_session, authenticated_client
+    ):
+        """A row with a NULL sort_key (not yet touched by a sync since
+        migration 0007) must sort AFTER every row with a real sort_key, not
+        before.
+
+        SQLite's default ASC ordering puts NULL first, which would put an
+        un-backfilled row at the very top of page 1 - ahead of everything,
+        including a movie like "Avatar" - the opposite of the deliberate
+        "unknowns last" treatment `_WANTED_ORDER` already applies to
+        `season_number` via `SEASON_ORDER_BUCKET_SQL`. `_WANTED_ORDER` must
+        wrap `sort_key` in `nulls_last(...)` to get this right.
+        """
+        now = datetime.now(timezone.utc)
+        sync_session.add_all(
+            [
+                BazarrCache(
+                    id="movie:1",
+                    kind="movie",
+                    ext_id=1,
+                    title="Avatar",
+                    media_path="/data/movies/avatar.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    last_polled=now,
+                    sort_key=library_sort_key("Avatar"),
+                ),
+                # Not yet backfilled: no sort_key, no structured fields at
+                # all - just like a row synced by a pre-0007 worker that
+                # hasn't been re-polled since the upgrade.
+                BazarrCache(
+                    id="episode:900",
+                    kind="episode",
+                    ext_id=900,
+                    title="Episode 1",
+                    media_path="/data/series/unbackfilled/e1.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    last_polled=now,
+                    sort_key=None,
+                ),
+                BazarrCache(
+                    id="movie:2",
+                    kind="movie",
+                    ext_id=2,
+                    title="Zeta",
+                    media_path="/data/movies/zeta.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    last_polled=now,
+                    sort_key=library_sort_key("Zeta"),
+                ),
+            ]
+        )
+        sync_session.commit()
+
+        response = authenticated_client.get("/api/wanted")
+        assert response.status_code == 200
+        ids = [i["id"] for i in response.json()["items"]]
+        assert ids == ["movie:1", "movie:2", "episode:900"]
+
+    def test_list_wanted_orders_by_kind_and_series_when_sort_key_collides(
+        self, sync_session, authenticated_client
+    ):
+        """Two different series/movies that happen to share an identical
+        sort_key must still be ordered deterministically by kind, then
+        series_ext_id, then season/episode - proving those terms are
+        actually load-bearing in `_WANTED_ORDER`, not merely decorative.
+
+        `_seed_ordering_series`'s multi-row fixture can't catch a regression
+        here: every one of its "The Parisian Agency" rows already shares
+        the same kind AND series_ext_id, so dropping either term from
+        `_WANTED_ORDER` wouldn't change that fixture's expected order at
+        all. This test forges a same-sort_key collision between two
+        genuinely distinct items to close that gap.
+        """
+        now = datetime.now(timezone.utc)
+        shared_key = library_sort_key("Same Name")
+        sync_session.add_all(
+            [
+                BazarrCache(
+                    id="episode:20",
+                    kind="episode",
+                    ext_id=20,
+                    title="Episode 1",
+                    series_title="Same Name",
+                    series_ext_id=200,  # higher series_ext_id
+                    season_number=1,
+                    episode_number=1,
+                    media_path="/data/series/b/s01e01.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    last_polled=now,
+                    sort_key=shared_key,
+                ),
+                BazarrCache(
+                    id="episode:10",
+                    kind="episode",
+                    ext_id=10,
+                    title="Episode 1",
+                    series_title="Same Name",
+                    series_ext_id=100,  # lower series_ext_id
+                    season_number=1,
+                    episode_number=1,
+                    media_path="/data/series/a/s01e01.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    last_polled=now,
+                    sort_key=shared_key,
+                ),
+                BazarrCache(
+                    id="movie:30",
+                    kind="movie",
+                    ext_id=30,
+                    title="Same Name",
+                    media_path="/data/movies/same-name.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    last_polled=now,
+                    sort_key=shared_key,
+                ),
+            ]
+        )
+        sync_session.commit()
+
+        response = authenticated_client.get("/api/wanted")
+        assert response.status_code == 200
+        ids = [i["id"] for i in response.json()["items"]]
+        # "episode" < "movie" lexicographically, so the two episodes (lower
+        # series_ext_id first) come before the movie.
+        assert ids == ["episode:10", "episode:20", "movie:30"]
+
+    def test_list_wanted_response_includes_series_and_season_fields(
+        self, sync_session, authenticated_client
+    ):
+        """Episode items expose series_title/season_number/episode_number;
+        movie items report them as null."""
+        self._seed_ordering_series(sync_session)
+
+        response = authenticated_client.get("/api/wanted")
+        assert response.status_code == 200
+        items = {i["id"]: i for i in response.json()["items"]}
+
+        episode = items["episode:101"]
+        assert episode["series_title"] == "The Parisian Agency"
+        assert episode["season_number"] == 1
+        assert episode["episode_number"] == 2
+
+        movie = items["movie:1"]
+        assert movie["series_title"] is None
+        assert movie["season_number"] is None
+        assert movie["episode_number"] is None
+
+    def test_list_wanted_order_by_is_satisfied_by_the_index(self, sync_session):
+        """`ix_bazarr_cache_sort` must actually back `_WANTED_ORDER`, not
+        just exist.
+
+        Regression guard for a real perf gap: `_WANTED_ORDER`'s season-bucket
+        term used to be built with SQLAlchemy's `case()`, whose THEN/ELSE
+        values compile to bound `?` parameters. SQLite's planner never
+        matches a bound parameter to an expression index, so it silently
+        fell back to `SCAN bazarr_cache` + `USE TEMP B-TREE FOR ORDER BY` -
+        a full table scan and full sort on every request, index present or
+        not. Building the term from `text(SEASON_ORDER_BUCKET_SQL)` instead
+        (the same literal SQL the index itself is built from - see
+        db/models.py) lets SQLite satisfy the whole ORDER BY straight from
+        the index. Confirmed with EXPLAIN QUERY PLAN, not just by reading
+        the code - a future edit to either side could silently reintroduce
+        the mismatch.
+        """
+        from sqlalchemy import select, text
+        from sqlalchemy.dialects import sqlite as sqlite_dialect
+
+        from audio_to_subs.api.routes.wanted import _WANTED_ORDER
+
+        # Enough rows that SQLite's planner has a real table to reason
+        # about, rather than trivially preferring whatever for a handful
+        # of rows.
+        for n in range(1, 501):
+            season = None if n % 37 == 0 else (0 if n % 11 == 0 else (n % 6) + 1)
+            sync_session.add(
+                BazarrCache(
+                    id=f"episode:{n}",
+                    kind="episode",
+                    ext_id=n,
+                    title=f"Episode {n}",
+                    media_path=f"/tv/show{n % 20}/e{n}.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    series_title=f"Show {n % 20}",
+                    series_ext_id=n % 20,
+                    season_number=season,
+                    episode_number=n,
+                    sort_key=library_sort_key(f"Show {n % 20}"),
+                )
+            )
+        sync_session.commit()
+        sync_session.connection().exec_driver_sql("ANALYZE")
+
+        query = select(BazarrCache).order_by(*_WANTED_ORDER)
+        sql = str(
+            query.compile(
+                dialect=sqlite_dialect.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+
+        plan_rows = sync_session.execute(text("EXPLAIN QUERY PLAN " + sql)).all()
+        plan = " | ".join(str(row) for row in plan_rows)
+
+        assert "USING INDEX ix_bazarr_cache_sort" in plan, plan
+        assert "TEMP B-TREE" not in plan, plan
+
+    # --- Episode-code search tests -----------------------------------------
+
+    def test_list_wanted_search_season_code_only(
+        self, sync_session, authenticated_client
+    ):
+        """search=s04 matches only items in season 4 (any series)."""
+        self._seed_ordering_series(sync_session)
+        response = authenticated_client.get("/api/wanted", params={"search": "s04"})
+        assert response.status_code == 200
+        ids = {i["id"] for i in response.json()["items"]}
+        assert ids == {"episode:103"}
+
+    def test_list_wanted_search_season_episode_code(
+        self, sync_session, authenticated_client
+    ):
+        """search=S04E01 matches exactly that one episode."""
+        self._seed_ordering_series(sync_session)
+        response = authenticated_client.get("/api/wanted", params={"search": "S04E01"})
+        assert response.status_code == 200
+        ids = {i["id"] for i in response.json()["items"]}
+        assert ids == {"episode:103"}
+
+    def test_list_wanted_search_nxn_code(self, sync_session, authenticated_client):
+        """The "4x01" shorthand is equivalent to S04E01."""
+        self._seed_ordering_series(sync_session)
+        response = authenticated_client.get("/api/wanted", params={"search": "4x01"})
+        assert response.status_code == 200
+        ids = {i["id"] for i in response.json()["items"]}
+        assert ids == {"episode:103"}
+
+    def test_list_wanted_search_text_plus_season_code(
+        self, sync_session, authenticated_client
+    ):
+        """search="agency s01" matches the season-1 episodes of the series
+        whose name (not bare episode title) contains "agency"."""
+        self._seed_ordering_series(sync_session)
+        response = authenticated_client.get(
+            "/api/wanted", params={"search": "agency s01"}
+        )
+        assert response.status_code == 200
+        ids = {i["id"] for i in response.json()["items"]}
+        assert ids == {"episode:101", "episode:102"}
+
+    def test_list_wanted_search_matches_episode_own_title_not_series(
+        self, sync_session, authenticated_client
+    ):
+        """Free-text search also matches an episode's own bare title, even
+        when that text doesn't appear in the series name."""
+        self._seed_ordering_series(sync_session)
+        response = authenticated_client.get(
+            "/api/wanted", params={"search": "Behind the Scenes"}
+        )
+        assert response.status_code == 200
+        ids = {i["id"] for i in response.json()["items"]}
+        assert ids == {"episode:104"}
+
+    def test_list_wanted_search_escapes_percent_literal(
+        self, sync_session, authenticated_client
+    ):
+        """A literal '%' in the search text must not act as a SQL LIKE
+        wildcard (reuses the escaping logic already used elsewhere in this
+        route)."""
+        sync_session.add_all(
+            [
+                BazarrCache(
+                    id="movie:501",
+                    kind="movie",
+                    ext_id=501,
+                    title="50% Off",
+                    media_path="/data/movies/50off.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    last_polled=datetime.now(timezone.utc),
+                ),
+                BazarrCache(
+                    id="movie:502",
+                    kind="movie",
+                    ext_id=502,
+                    title="50XOff Anything",
+                    media_path="/data/movies/50xoff.mkv",
+                    has_any_subs=False,
+                    missing_subtitles=[],
+                    last_polled=datetime.now(timezone.utc),
+                ),
+            ]
+        )
+        sync_session.commit()
+
+        response = authenticated_client.get("/api/wanted", params={"search": "50%"})
+        assert response.status_code == 200
+        titles = {i["title"] for i in response.json()["items"]}
+        assert titles == {"50% Off"}
 
 
 class TestGetWantedItemEndpoint:
