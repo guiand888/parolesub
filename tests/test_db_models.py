@@ -387,9 +387,9 @@ async def test_job_media_label_snapshot_round_trip():
             output_format=OutputFormat.SRT,
             status=JobStatus.QUEUED,
             source=JobSource.BAZARR_EPISODE,
-            source_ref="13373",
+            source_ref="4242",
             title="Episode 1",
-            series_title="The Parisian Agency",
+            series_title="The Example Show",
             season_number=4,
             episode_number=1,
         )
@@ -403,7 +403,7 @@ async def test_job_media_label_snapshot_round_trip():
         fetched = result.scalar_one_or_none()
         assert fetched is not None
         assert fetched.title == "Episode 1"
-        assert fetched.series_title == "The Parisian Agency"
+        assert fetched.series_title == "The Example Show"
         assert fetched.season_number == 4
         assert fetched.episode_number == 1
 

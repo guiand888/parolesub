@@ -249,7 +249,7 @@ describe("HistoryPage", () => {
         source: "bazarr_episode",
         source_ref: "456",
         title: "Episode 1",
-        series_title: "The Parisian Agency",
+        series_title: "The Example Show",
         season_number: 4,
         episode_number: 1,
       }
@@ -264,14 +264,14 @@ describe("HistoryPage", () => {
       await waitFor(() => {
         expect(
           screen.getByText(
-            (_, element) => element?.textContent === "The Parisian Agency · S04E01",
+            (_, element) => element?.textContent === "The Example Show · S04E01",
           ),
         ).toBeInTheDocument()
       })
       expect(screen.getByText("episode")).toBeInTheDocument()
       expect(screen.getByText("· Bazarr #456")).toBeInTheDocument()
       expect(
-        screen.getByTitle("The Parisian Agency · S04E01 · Episode 1"),
+        screen.getByTitle("The Example Show · S04E01 · Episode 1"),
       ).toBeInTheDocument()
     })
 

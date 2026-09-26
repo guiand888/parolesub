@@ -307,10 +307,10 @@ def test_create_job_episode_snapshots_full_media_label(
             kind="episode",
             ext_id=501,
             title="Episode 1",
-            series_title="The Parisian Agency",
+            series_title="The Example Show",
             season_number=4,
             episode_number=1,
-            media_path="/tv/The Parisian Agency/S04E01.mkv",
+            media_path="/tv/The Example Show/S04E01.mkv",
             has_any_subs=False,
             missing_subtitles=[],
             audio_language=[],
@@ -331,7 +331,7 @@ def test_create_job_episode_snapshots_full_media_label(
     assert response.status_code == 201, response.text
     data = response.json()
     assert data["title"] == "Episode 1"
-    assert data["series_title"] == "The Parisian Agency"
+    assert data["series_title"] == "The Example Show"
     assert data["season_number"] == 4
     assert data["episode_number"] == 1
 
@@ -403,11 +403,11 @@ def test_create_job_episode_pre_sync_cache_snapshots_title_only(
             id="episode:502",
             kind="episode",
             ext_id=502,
-            title="The Parisian Agency - Episode 3",
+            title="The Example Show - Episode 3",
             series_title=None,
             season_number=None,
             episode_number=None,
-            media_path="/tv/The Parisian Agency/S04E03.mkv",
+            media_path="/tv/The Example Show/S04E03.mkv",
             has_any_subs=False,
             missing_subtitles=[],
             audio_language=[],
@@ -427,7 +427,7 @@ def test_create_job_episode_pre_sync_cache_snapshots_title_only(
 
     assert response.status_code == 201, response.text
     data = response.json()
-    assert data["title"] == "The Parisian Agency - Episode 3"
+    assert data["title"] == "The Example Show - Episode 3"
     assert data["series_title"] is None
     assert data["season_number"] is None
     assert data["episode_number"] is None
@@ -445,10 +445,10 @@ def test_create_job_media_path_override_still_snapshots(
             kind="episode",
             ext_id=503,
             title="Episode 1",
-            series_title="The Parisian Agency",
+            series_title="The Example Show",
             season_number=4,
             episode_number=1,
-            media_path="/tv/The Parisian Agency/S04E01.mkv",
+            media_path="/tv/The Example Show/S04E01.mkv",
             has_any_subs=False,
             missing_subtitles=[],
             audio_language=[],
@@ -462,15 +462,15 @@ def test_create_job_media_path_override_still_snapshots(
         json={
             "source": "bazarr_episode",
             "source_ref": "503",
-            "media_path": "/tv/The Parisian Agency/S04E01.override.mkv",
+            "media_path": "/tv/The Example Show/S04E01.override.mkv",
         },
     )
 
     assert response.status_code == 201, response.text
     data = response.json()
-    assert data["media_path"] == "/tv/The Parisian Agency/S04E01.override.mkv"
+    assert data["media_path"] == "/tv/The Example Show/S04E01.override.mkv"
     assert data["title"] == "Episode 1"
-    assert data["series_title"] == "The Parisian Agency"
+    assert data["series_title"] == "The Example Show"
     assert data["season_number"] == 4
     assert data["episode_number"] == 1
 
@@ -488,10 +488,10 @@ def test_create_job_episode_snapshots_season_zero_as_a_real_value(
             kind="episode",
             ext_id=504,
             title="Christmas Special",
-            series_title="The Parisian Agency",
+            series_title="The Example Show",
             season_number=0,
             episode_number=1,
-            media_path="/tv/The Parisian Agency/S00E01.mkv",
+            media_path="/tv/The Example Show/S00E01.mkv",
             has_any_subs=False,
             missing_subtitles=[],
             audio_language=[],

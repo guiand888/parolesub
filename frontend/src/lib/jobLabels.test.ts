@@ -53,14 +53,14 @@ describe("jobMedia", () => {
       source: "bazarr_episode",
       source_ref: "500",
       title: "Christmas Special",
-      series_title: "The Parisian Agency",
+      series_title: "The Example Show",
       season_number: 0,
       episode_number: 1,
     })
     expect(jobMedia(job)).toEqual({
       kind: "episode",
       title: "Christmas Special",
-      series_title: "The Parisian Agency",
+      series_title: "The Example Show",
       season_number: 0,
       episode_number: 1,
     })
@@ -69,16 +69,16 @@ describe("jobMedia", () => {
   it("maps a fully-snapshotted episode job", () => {
     const job = makeJob({
       source: "bazarr_episode",
-      source_ref: "13373",
+      source_ref: "4242",
       title: "Episode 1",
-      series_title: "The Parisian Agency",
+      series_title: "The Example Show",
       season_number: 4,
       episode_number: 1,
     })
     expect(jobMedia(job)).toEqual({
       kind: "episode",
       title: "Episode 1",
-      series_title: "The Parisian Agency",
+      series_title: "The Example Show",
       season_number: 4,
       episode_number: 1,
     })
@@ -98,8 +98,8 @@ describe("jobMedia", () => {
 
 describe("bazarrRef", () => {
   it("formats a Bazarr episode ref", () => {
-    expect(bazarrRef(makeJob({ source: "bazarr_episode", source_ref: "13373" }))).toBe(
-      "Bazarr #13373",
+    expect(bazarrRef(makeJob({ source: "bazarr_episode", source_ref: "4242" }))).toBe(
+      "Bazarr #4242",
     )
   })
 
@@ -122,16 +122,16 @@ describe("degraded states (Queue/History/Detail label table)", () => {
   it("episode, full snapshot", () => {
     const job = makeJob({
       source: "bazarr_episode",
-      source_ref: "13373",
+      source_ref: "4242",
       title: "Episode 1",
-      series_title: "The Parisian Agency",
+      series_title: "The Example Show",
       season_number: 4,
       episode_number: 1,
     })
-    expect(jobHeadline(job)).toEqual({ name: "The Parisian Agency", code: "S04E01" })
-    expect(jobHeadlineText(job)).toBe("The Parisian Agency · S04E01")
+    expect(jobHeadline(job)).toEqual({ name: "The Example Show", code: "S04E01" })
+    expect(jobHeadlineText(job)).toBe("The Example Show · S04E01")
     expect(jobSubtitleParts(job)).toEqual(["Episode 1"])
-    expect(jobFullLabel(job)).toBe("The Parisian Agency · S04E01 · Episode 1")
+    expect(jobFullLabel(job)).toBe("The Example Show · S04E01 · Episode 1")
   })
 
   it("episode, season 0 (a special) - a real code, not treated as missing", () => {
@@ -139,40 +139,40 @@ describe("degraded states (Queue/History/Detail label table)", () => {
       source: "bazarr_episode",
       source_ref: "500",
       title: "Christmas Special",
-      series_title: "The Parisian Agency",
+      series_title: "The Example Show",
       season_number: 0,
       episode_number: 1,
     })
-    expect(jobHeadline(job)).toEqual({ name: "The Parisian Agency", code: "S00E01" })
-    expect(jobFullLabel(job)).toBe("The Parisian Agency · S00E01 · Christmas Special")
+    expect(jobHeadline(job)).toEqual({ name: "The Example Show", code: "S00E01" })
+    expect(jobFullLabel(job)).toBe("The Example Show · S00E01 · Christmas Special")
   })
 
   it("episode, series known but numbers not backfilled", () => {
     const job = makeJob({
       source: "bazarr_episode",
-      source_ref: "13373",
+      source_ref: "4242",
       title: "Episode 1",
-      series_title: "The Parisian Agency",
+      series_title: "The Example Show",
       season_number: null,
       episode_number: null,
     })
-    expect(jobHeadline(job)).toEqual({ name: "The Parisian Agency", code: null })
+    expect(jobHeadline(job)).toEqual({ name: "The Example Show", code: null })
     expect(jobSubtitleParts(job)).toEqual(["Episode 1"])
-    expect(jobFullLabel(job)).toBe("The Parisian Agency · Episode 1")
+    expect(jobFullLabel(job)).toBe("The Example Show · Episode 1")
   })
 
   it("episode, title only (flattened snapshot taken before the first sync)", () => {
     const job = makeJob({
       source: "bazarr_episode",
       source_ref: "300",
-      title: "The Parisian Agency - Episode 3",
+      title: "The Example Show - Episode 3",
       series_title: null,
       season_number: null,
       episode_number: null,
     })
-    expect(jobHeadline(job)).toEqual({ name: "The Parisian Agency - Episode 3", code: null })
+    expect(jobHeadline(job)).toEqual({ name: "The Example Show - Episode 3", code: null })
     expect(jobSubtitleParts(job)).toEqual([])
-    expect(jobFullLabel(job)).toBe("The Parisian Agency - Episode 3")
+    expect(jobFullLabel(job)).toBe("The Example Show - Episode 3")
   })
 
   it("movie", () => {

@@ -53,7 +53,7 @@ export function mediaFileName(mediaPath: string): string {
   return parts[parts.length - 1] ?? mediaPath
 }
 
-// "Bazarr #13373" for a Bazarr job with a reference id; null for a manual
+// "Bazarr #4242" for a Bazarr job with a reference id; null for a manual
 // job (even one that happens to carry a stray source_ref) or a Bazarr job
 // missing one.
 export function bazarrRef(job: JobLabelInput): string | null {

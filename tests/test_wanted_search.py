@@ -39,8 +39,8 @@ class TestParseWantedSearch:
         )
 
     def test_plain_text_query_with_no_code(self):
-        assert parse_wanted_search("The Parisian Agency") == WantedSearch(
-            text="The Parisian Agency", season=None, episode=None
+        assert parse_wanted_search("The Example Show") == WantedSearch(
+            text="The Example Show", season=None, episode=None
         )
 
     def test_empty_string(self):
@@ -70,8 +70,8 @@ class TestParseWantedSearch:
         )
 
     def test_whitespace_collapsing_no_code(self):
-        assert parse_wanted_search("  the   parisian   agency  ") == WantedSearch(
-            text="the parisian agency", season=None, episode=None
+        assert parse_wanted_search("  the   example   agency  ") == WantedSearch(
+            text="the example agency", season=None, episode=None
         )
 
     def test_code_embedded_in_larger_word_is_not_matched(self):
